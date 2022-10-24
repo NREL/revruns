@@ -1,0 +1,20 @@
+[console_scripts]
+rraster = revruns.rraster:main
+rrbatch_collect = revruns.rrbatch_collect:main
+rrbatch_hack = revruns.rrbatch_hack:main
+rrbatch_logs = revruns.rrbatch_logs:main
+rrcheck = revruns.rrcheck:main
+rrcomposite = revruns.rrcomposite:main
+rrconnections = revruns.rrconnections:main
+rrerun = revruns.rrerun:main
+rrexclusion = revruns.rrexclusion:main
+rrgeoref = revruns.rrgeoref:main
+rrgraphs = revruns.rrgraphs:main
+rrlist = revruns.rrlist:main
+rrlogs = revruns.rrlogs:main
+rrpipeline = revruns.rrpipeline:rrpipeline
+rrpoints = revruns.rrpoints:main
+rrprofiles = revruns.rrprofiles:main
+rrsetup = revruns.rrsetup:main
+rrshape = revruns.rrshape:main
+rrtemplates = revruns.rrtemplates:main

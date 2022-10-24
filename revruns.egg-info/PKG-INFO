@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: revruns
+Version: 0.0.2
+Summary: Functions and CLIs that to help to configure, run, and check outputs for NREL's Renewable Energy Technical Potential Model (reV).
+Author: Travis Williams
+Author-email: travis.williams@nrel.gov
