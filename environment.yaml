@@ -1,18 +1,18 @@
-name: homeruns
+name: revruns
 channels:
   - nrel
   - conda-forge
   - defaults
 dependencies:
-  - python=3.8
   - colorama
   - descartes
   - gdal
-  - geopandas
+  - geopandas=0.11.1
   - h5py
   - ipython
   - numpy
   - pandas
+  - python=3.9
   - rasterio
   - rioxarray
   - tabulate
@@ -24,11 +24,12 @@ dependencies:
   - pip:
     - addfips
     - cpi
+    - HOPP==0.0.5
+    - h5pyd
+    - ipywidgets
+    - openpyxl
     - pgpasslib
     - pathos
-    - h5pyd
     - pandarallel
-    - ipywidgets
     - pathos
-    - openpyxl
-    - HOPP=0.0.5
+    - us

@@ -25,9 +25,14 @@ import warnings
 from glob import glob
 
 import click
+import pandas as pd
 
 from colorama import Fore, Style
-from pandas.core.common import SettingWithCopyWarning
+
+try:
+    from pandas.errors import SettingWithCopyWarning
+except ImportError:
+    from pandas.core.common import SettingWithCopyWarning
 
 warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
 

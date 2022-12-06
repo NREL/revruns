@@ -106,7 +106,7 @@ class Rasters:
                 print(f"missing chunk: {i}")
                 missing.append(i)
 
-        dst = f"/scratch/twillia2/{self.table}.tif" 
+        dst = f"/scratch/twillia2/{self.table}.tif"   # <---------------------- Finish
         if os.path.exists(dst):
             os.remove(dst)
         with rio.open(dst,"w", **profile) as file:
@@ -363,7 +363,7 @@ class TechPotential(Rasters):
         if table is None:
             if self.table is None:
                 raise KeyError("No table provided. Set as attribute or "
-                            "argument.")
+                               "argument.")
             else:
                 table = self.table
 
