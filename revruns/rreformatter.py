@@ -23,6 +23,7 @@ import geopandas as gpd
 import h5py
 import numpy as np
 import pandas as pd
+import pyproj
 import rasterio as rio
 
 from pyproj import CRS, Transformer
@@ -33,6 +34,7 @@ from shapely import geometry
 from shapely.ops import cascaded_union
 from tqdm import tqdm
 
+pyproj.network.set_network_enabled(False)  # Resolves VPN issues
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 

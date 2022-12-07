@@ -8,7 +8,8 @@ Created on Fri Jan 28 16:57:22 2022
 import os
 import tempfile
 
-from revruns import rr, rreformatter
+from revruns import rr
+from revruns.rreformatter import Reformatter
 
 
 TEMPLATE = "data/rasters/pr_template.tif"
@@ -25,11 +26,26 @@ INPUT_DICT = {
     }
 }
 INPUT_FPATH = "data/tables/rev_inputs.xlsx"
+INPUTS = rr.get_sheet(INPUT_FPATH, "data")
+
+
+def format_inputs():
+    """Format input data frame into rreformatter input dictionary."""
+    inputs = {}
+    for i, row in INPUTS.iterrows():
+        inputs[row["name"]] = {
+            "path": row["path"],
+            "layer": row["layer"],
+            "field": row["field"],
+            "description": row["description"],
+            "source": row["source"]
+        }
+    return inputs
 
 
 def test_dict():
     """Test sample refromatting routine with input dictionary."""
-    
+    inputs = format_inputs()
 
 def test_table():
     """Test sample refromatting routine with input excel file."""
@@ -37,7 +53,7 @@ def test_table():
     with tempfile.TemporaryDirectory() as out_dir:
         excl_fpath = os.path.join(out_dir, "Test_Exclusions.h5")
         inputs = rr.get_sheet(INPUT_FPATH, "data")
-        reformatter = rreformatter.Reformatter(
+        reformatter = Reformatter(
             inputs=inputs,
             out_dir=out_dir,
             template=TEMPLATE,
