@@ -189,7 +189,22 @@ def gdal_options(module="translate", **kwargs):
     if one was mispelled. Alternately, run with no **kwargs for a list of
     available options and descriptions.
 
-    Examples:
+    Parameters
+    ----------
+    module : str
+        A string representing a GDAL module. Available modules are 'info',
+        'multidiminfo', 'translate', 'warp', 'vectortranslate',
+        'demprocessing', 'nearblack', 'grid', 'rasterize', 'buildvrt',
+        'multidimtranslate', and 'getfilesystem'
+
+    Returns
+    -------
+    gdal options object | list:
+        An list of strings describing available options and their descriptions
+        or a gdal options object.
+        
+    Example
+    --------
         gdal_options("warp")
         ops = gdal_options("warp", dstSRS="epsg:4326", xRes=.25, yRes=.25)
     """
@@ -197,7 +212,10 @@ def gdal_options(module="translate", **kwargs):
     module = module.lower().replace("gdal", "").replace("_", "")
 
     # All available options
-    options = [m for m in gdal.__dict__ if "Options" in m and "_" not in m and "GDAL" not in m]
+    options = []
+    for m in gdal.__dict__:
+        if "Options" in m and "_" not in m and "GDAL" not in m:
+            options.append(m)
 
     # Get the module option method associated with module
     modules = []
@@ -233,9 +251,58 @@ def gdal_options(module="translate", **kwargs):
     except TypeError as terror:
         te = terror.args[0]
         missing = te.split()[-1]
-        print("The " + missing + " option is not available or formatted "
+        print(f"The {missing} option is either not available or formatted "
               "incorrectly.")
         print(docs)
+        return
+
+def creation_options(module, **kwargs):
+    """Print available options for a given gdal module.
+
+    Parameters
+    ----------
+    module : str
+        A string representing a GDAL module. Available modules are 'info',
+        'multidiminfo', 'translate', 'warp', 'vectortranslate',
+        'demprocessing', 'nearblack', 'grid', 'rasterize', 'buildvrt',
+        'multidimtranslate', and 'getfilesystem'
+
+    Returns
+    -------
+    list:
+        An list of strings describing available options and their descriptions.
+        
+    Examples
+    --------
+        creation_options("warp")
+    """
+    # Standardize case
+    module = module.lower().replace("gdal", "").replace("_", "")
+
+    # All available options
+    options = []
+    for m in gdal.__dict__:
+        if "Options" in m and "_" not in m and "GDAL" not in m:
+            options.append(m)
+
+    # Get the module option method associated with module
+    modules = []
+    for o in options:
+        o = o.replace("GDAL", "").replace("Options", "").replace("_", "")
+        o = o.lower()
+        modules.append(o)
+
+    # Create options dictionary
+    option_dict = dict(zip(modules, options))
+
+    # Get the requested option method
+    try:
+        option = option_dict[module]
+        method = getattr(gdal, option)
+    except KeyError:
+        print("GDAL options for " + module + " are not available.")
+        docs = "\n   ".join(modules)
+        print("Available methods with options:\n   " + docs)
         return
 
 
@@ -843,7 +910,8 @@ def to_raster(array, savepath, crs=None, geometry=None, template=None,
     image.GetRasterBand(1).SetNoDataValue(navalue)
 
 
-def translate(src, dst, overwrite=False, compress=None, **kwargs):
+def translate(src, dst, overwrite=False, compress=None, creation_ops=None,
+             **kwargs):
     """
     Translate a raster dataset from one format to another.
 
@@ -857,6 +925,8 @@ def translate(src, dst, overwrite=False, compress=None, **kwargs):
     compress : str
         A compression technique. Available options are "DEFLATE", "JPEG",
         "LZW"
+    creation_ops : dict | None
+        Dictionary of creation options. 
     **kwargs
         Any available key word arguments for gdal_translate. Available options
         and descriptions can be found using gdal_options("translate").
@@ -932,8 +1002,8 @@ def translate(src, dst, overwrite=False, compress=None, **kwargs):
     del ds
 
 
-def warp(src, dst, dtype="Float32", template=None, overwrite=False,
-         compress=None, **kwargs):
+def warp(src, dst, dtype=None, template=None, overwrite=False,
+        creation_ops=None, **kwargs):
     """
     Warp a raster to a new geometry.
 
@@ -946,16 +1016,17 @@ def warp(src, dst, dtype="Float32", template=None, overwrite=False,
     dtype : str | gdal object
         GDAL data type. Can be a string or a gdal type object (e.g.
         gdal.GDT_Float32, "GDT_Float32", "float32"). Available GDAL data types
-        and descriptions can be found in the GDAL_TYPES dictionary.
+        and descriptions can be found in the GDAL_TYPES dictionary. Defaults
+        to src data type (optional).
     template : str
         Path to a raster file with desired target raster geometry, crs,
         resolution, and extent values. This will overwrite other arguments
         provided for these parameters. Template-derived arguments will
-        overwrite **kwargs.
+        overwrite **kwargs (optional).
     overwrite : boolean
-    compress : str
-        A compression technique. Available options are "DEFLATE", "JPEG",
-        "LZW"
+        Overwrite dst file (optional).
+    creation_ops : dict
+        A dictionary of creation option keys and values (optional).
     **kwargs
         Any available key word arguments for gdalwarp. Available options
         and descriptions can be found using gdal_options("warp").
@@ -973,7 +1044,6 @@ def warp(src, dst, dtype="Float32", template=None, overwrite=False,
     # Create progress callback - these behave differently by module
     def warp_progress(percent, message, unknown):
         """A progress callback that recreates the gdal printouts."""
-
         # We don't need the message or unknown objects
         del message, unknown
 
@@ -1002,7 +1072,17 @@ def warp(src, dst, dtype="Float32", template=None, overwrite=False,
             print(dst + " exists, use overwrite=True to replace this file.")
             return
 
+    # Open source data set for inherited parameters    
+    source = gdal.Open(src)
+
+    # Create a spatial reference object
+    spatial_ref = osr.SpatialReference()
+
     # Specifying data types shouldn't be so difficult
+    if dtype is None:
+        band = source.GetRasterBand(1)
+        dtype = band.DataType
+
     if isinstance(dtype, str):
         dtype = dtype.lower().replace("gdt_", "")
         try:
@@ -1011,9 +1091,6 @@ def warp(src, dst, dtype="Float32", template=None, overwrite=False,
             print("\n'" + dtype + "' is not an available data type. "
                   "Choose a value from this list:")
             print(str(list(GDAL_TYPEMAP.keys())))
-
-    # Create a spatial reference object
-    spatial_ref = osr.SpatialReference()
 
     # If a template is provided, use its geometry for target figures
     if template:
@@ -1026,8 +1103,8 @@ def warp(src, dst, dtype="Float32", template=None, overwrite=False,
         xmin, xres, xrot, ymax, yrot, yres = transform
         xs = [xmin + xres * i for i in range(width)]
         ys = [ymax + yres * i for i in range(height)]
-        xmax = max(xs) + 0.5*xres
-        ymax = ymax + 0.5*xres
+        xmax = max(xs) + 0.5 * xres
+        ymax = ymax + 0.5 * xres
         ymin = min(ys)
         extent = [xmin, ymin, xmax, ymax]
         kwargs["dstSRS"] = srs
@@ -1041,27 +1118,28 @@ def warp(src, dst, dtype="Float32", template=None, overwrite=False,
         return
 
     # Get source srs
-    source = gdal.Open(src)
     spatial_ref.ImportFromWkt(source.GetProjection())
     srs = spatial_ref.ExportToProj4()
     kwargs["srcSRS"] = srs
 
     # Use the progress callback
-    kwargs["callback"] = gdal_progress
+    kwargs["callback"] = gdal.TermProgress_nocb
 
-    # Compress
-    if compress:
-        kwargs["creationOptions"] = ["COMPRESS=" + compress]
+    # Other creation options
+    if creation_ops:
+        kwargs["creationOptions"] = []
+        for key, value in creation_ops.items():
+            kwargs["creationOptions"].append(f"{key}={value}")
 
     # Check Options: https://gdal.org/python/osgeo.gdal-module.html#WarpOptions
     ops = gdal_options("warp", **kwargs)
 
     # Call
-    print("Processing " + dst + " :")
+    print(f"Processing {dst}:")
     ds = gdal.Warp(dst, src, options=ops)
     del ds
 
-        
+
 class Map_Values:
     """Map a set of keys from an input raster (or rasters) to values in an
     output raster (or rasters) using a dictionary of key-value pairs."""
@@ -1208,3 +1286,13 @@ class Map_Values:
             x = self.err_val
 
         return x
+
+
+if __name__ == "__main__":
+    warp(
+        src='/shared-projects/rev/projects/alaska/fy23/data/rasters/slope_20pct.tif',
+        dst='/shared-projects/rev/projects/alaska/fy23/data/exclusions/slope_20pct.tif',
+        template='/shared-projects/rev/projects/alaska/fy23/data/rasters/nlcd_2016_land_cover_ak.tif',
+        creation_ops={'compress': 'lzw', 'tiled': 'yes', 'blockxsize': 128, 'blockysize': 128},
+        overwrite=True
+    )

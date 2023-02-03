@@ -115,7 +115,7 @@ def csv_to_shape(src, dst=None, driver="gpkg", epsg=4326):
     gdf.to_file(dst, layer=layer, driver=driver_str)
 
 
-def h5_to_shape(src, dst=None, driver="gpkg", dataset=None, layer=0, ag=None,
+def h5_to_shape(src, dst=None, driver="gpkg", dataset=None, layer=0, agg=None,
                 epsg=4326):
     """For now, this will just take a single time period as an index position
     in the time series.
@@ -221,7 +221,7 @@ def h5_to_shape(src, dst=None, driver="gpkg", dataset=None, layer=0, ag=None,
 @click.option("--layer", "-l", default=0, help=LAYER_HELP)
 @click.option("--agg", "-a", default=None, help=AG_HELP)
 @click.option("--driver", "-d", default="GPKG", help=DRIVER_HELP)
-def main(src, dst, dataset, layer, ag, driver):
+def main(src, dst, dataset, layer, agg, driver):
     """Take a csv or hdf5 from reV and write a shapefile or geopackage."""
     # Expand this path in case we need to set dst
     src = os.path.expanduser(src)
@@ -242,7 +242,7 @@ def main(src, dst, dataset, layer, ag, driver):
     ext = os.path.splitext(src)[1]
     if ext == ".h5":
         h5_to_shape(src, dst, driver=driver, dataset=dataset, layer=layer,
-                    ag=ag)
+                    agg=agg)
     elif ext == ".csv":
         csv_to_shape(src, dst, driver=driver)
     else:
@@ -252,3 +252,9 @@ def main(src, dst, dataset, layer, ag, driver):
 
 if "__name__" == "__main__":
     main()
+
+
+
+
+
+gdal_rasterize -te -2232345.0 344805.0 1494735.0 2380125 -tr 30 -30 -t_srs epsg:3338 

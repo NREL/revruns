@@ -136,7 +136,7 @@ def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
     gdf = gdf.to_crs(crs)
 
     # Create a consistent grid out of this
-    gdf = to_grid(gdf, variable, resolution)
+    # gdf = to_grid(gdf, variable, resolution)
 
     # And finally rasterize
     rasterize(gdf, resolution, dst, fillna, cutline)

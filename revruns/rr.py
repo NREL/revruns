@@ -50,7 +50,7 @@ def crs_match_alt(crs1, crs2):
     assert "+lat_1" in crs2, "Fail"
 
     # Check that there is no difference
-    diff = set(crs.split())  - set(crs2.split())
+    diff = set(crs1.split())  - set(crs2.split())
 
     if not diff:
         return True

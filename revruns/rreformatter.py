@@ -29,10 +29,12 @@ import rasterio as rio
 from pyproj import CRS, Transformer
 from rasterio import features
 from rasterio.merge import merge
-from revruns.rr import crs_match, isint, isfloat
 from shapely import geometry
 from shapely.ops import cascaded_union
 from tqdm import tqdm
+
+from revruns.gdalmethods import warp
+from revruns.rr import crs_match, isint, isfloat
 
 pyproj.network.set_network_enabled(False)  # Resolves VPN issues
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -413,7 +415,7 @@ class Exclusions:
 
         # Add coordinates and else check that the new file matches everything
         self._set_coords(profile)
-        self._check_dims(file, self.profile)
+        self._check_dims(file)
 
         # Add everything to target exclusion HDF
         array = raster.read()
@@ -502,49 +504,48 @@ class Exclusions:
                                  max_workers=None, sc_resolution=2560)
         return arrays
 
-    def _preflight(self):
-        """More initializing steps."""
-        if self.lookup:
-            if not isinstance(self.lookup, dict):
-                with open(self.lookup, "r") as file:
-                    self.lookup = json.load(file)
+    def _check_dims(self, path):
+        # Check new layers against the first6 added raster
+        if self.profile is not None:
+            old = self.profile
+            dname = os.path.basename(path)
+            with rio.open(path, "r") as r:    
+                new = r.profile
 
-    def _check_dims(self, file, profile):
-        # Check new layers against the first added raster
-        old = profile
-        dname = os.path.basename(file)
-        with rio.open(file, "r") as r:    
-            new = r.profile
+            # Check the CRS
+            if not crs_match(old["crs"], new["crs"]):
+                raise AssertionError(f"CRS for {dname} does not match "
+                                      "exisitng CRS.")
 
-        # Check the CRS
-        if not crs_match(old["crs"], new["crs"]):
-            raise AssertionError(f"CRS for {dname} does not match exisitng "
-                                 "CRS.")
+            # Check the transform
+            try:
+                # Standardize these
+                old_trans = old["transform"][:6]
+                new_trans = new["transform"][:6]
+                assert [old_trans[i] == new_trans[i] for i in range(6)]
+            except AssertionError:
+                print(f"Geotransform for {dname} does not match geotransform.")
+                raise
 
-        # Check the transform
-        try:
-            # Standardize these
-            old_trans = old["transform"][:6]
-            new_trans = new["transform"][:6]
-            assert old_trans == new_trans
-        except AssertionError:
-            print(f"Geotransform for {dname} does not match geotransform.")
-            raise
-
-        # Check the dimesions
-        try:
-            assert old["width"] == new["width"]
-            assert old["height"] == new["height"]
-        except AssertionError:
-            print(f"Width and/or height for {dname} does not match existing "
-                  "dimensions.")
-            raise
+            # Check the dimesions
+            try:
+                assert old["width"] == new["width"]
+                assert old["height"] == new["height"]
+            except AssertionError:
+                print(f"Width and/or height for {dname} does not match "
+                       "existing dimensions.")
+                raise
 
     def _convert_coords(self, xs, ys):
         # Convert projected coordinates into WGS84
+        print("Transforming xy...")
         mx, my = np.meshgrid(xs, ys)
-        transformer = Transformer.from_crs(self.profile["crs"],
-                                                "epsg:4326", always_xy=True)
+        crs = CRS(self.profile["crs"])
+        if "World Geodetic System 1984" in crs.datum.name:
+            tcrs = CRS("epsg:4326")
+        elif "North American Datum 1983" in crs.datum.name:
+            tcrs = CRS("epsg:4269")
+        transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
         lons, lats = transformer.transform(mx, my)
         return lons, lats
 
@@ -576,6 +577,14 @@ class Exclusions:
             with h5py.File(self.excl_fpath, "w") as ds:
                 ds.attrs["creation_date"] = date
 
+    def _preflight(self):
+        """More initializing steps."""
+        self._set_profile()
+        if self.lookup:
+            if not isinstance(self.lookup, dict):
+                with open(self.lookup, "r") as file:
+                    self.lookup = json.load(file)
+
     def _set_coords(self, profile):
         # Add the lat and lon meshgrids if they aren't already present
         with h5py.File(self.excl_fpath, "r+") as hdf:
@@ -594,16 +603,26 @@ class Exclusions:
 
                 # Convert to geographic coordinates
                 lons, lats = self._convert_coords(xs, ys)
+                print("setting_coords")
 
                 # Create grid and upload
                 hdf.create_dataset(name="longitude", data=lons)
                 hdf.create_dataset(name="latitude", data=lats)
 
+    def _set_profile(self):
+        """Return the exclusion file profile if available."""
+        profile = None
+        if os.path.exists(self.excl_fpath):
+            with h5py.File(self.excl_fpath, "r") as ds:
+                if "profile" in ds.attrs.keys():
+                    profile = json.loads(ds.attrs["profile"])
+        self.profile = profile
+
 
 class Reformatter(Exclusions):
     """Reformat any file or set of files into a reV-shaped raster."""
 
-    def __init__(self, inputs, out_dir, template=None, excl_fpath=None, 
+    def __init__(self, inputs, out_dir, template=None, excl_fpath=None,
                  overwrite_tif=False, overwrite_dset=False, lookup=None):
         """Initialize Reformatter object.
 
@@ -613,7 +632,7 @@ class Reformatter(Exclusions):
             Input data information. If dictionary, top-level keys provide
             the target name of reformatted dataset, second-level keys are
             'path' (required path to file'), 'field' (optional field name for
-            vectors), 'buffer' (optional buffer distance), and 'layer' 
+            vectors), 'buffer' (optional buffer distance), and 'layer'
             (required only for FileGeoDatabases). Inputs can also include any
             additional field and it will be included in the attributes of the
             HDF5 dataset if writing to and HDF5 file. If pandas data frame, the
@@ -663,12 +682,23 @@ class Reformatter(Exclusions):
         return f"<Reformatter: {pattrs}>"
 
     @property
+    def creation_options(self):
+        """Return standard raster creation options."""
+        ops = {
+            "compress": "lzw",
+            "tiled": "yes",
+            "blockxsize": 128,  # How to optimize internal tiling?
+            "blockysize": 128
+        }
+        return ops
+
+    @property
     def meta(self):
         """Return the meta information from the template file."""
         meta = None
         if self.template is not None:
             with rio.open(self.template) as raster:
-                meta = raster.meta
+                meta = raster.profile
         else:
             if not os.path.exists(self.excl_fpath):
                 raise FileNotFoundError("If not template is provided, an "
@@ -700,18 +730,16 @@ class Reformatter(Exclusions):
 
     def reformat_rasters(self):
         """Reformat all raster files in inputs."""
-        # Sequential processing: transform vectors into rasters
+        # Sequential for now
         dsts = []
-        for name, attrs in tqdm(self.rasters.items()):
-            # Unpack attributes
+        print(f"Formatting {len(self.rasters)} rasters...")
+        for name, attrs in self.rasters.items():
+            # Set paths
             path = attrs["path"]
-
-            # Create dst path
-            dst_name = name + ".tif"
-            dst = os.path.join(self.out_dir, dst_name)
+            dst = os.path.join(self.out_dir, f"{name}.tif")
             dsts.append(dst)
 
-            # Reformat vector
+            # Reformat raster
             self.reformat_raster(
                 path=path,
                 dst=dst
@@ -724,35 +752,33 @@ class Reformatter(Exclusions):
 
     def reformat_raster(self, path, dst):
         """Resample and re-project a raster."""
+        # Check that the input path exists
         if not os.path.exists(path):
             raise OSError(f"{path} does not exist.")
 
-        if self.template is not None:
-            try:
-                self._check_dims(path)
-                return
-            except:
-                pass
+        # If theres no template, make sure it matches the excl file  <--------- Still thinking how i want this to work
+        # if self.template is not None:
+        #     try:
+        #         self._check_dims(path)
+        #     except:
+        #         raise
 
-        if os.path.exists(dst) and not self.overwrite_tif:
-            return
-        else:
-            # If the tiff is too big make adjustments to avoid big tiff errors
-            # Reprojecting separately might do the trick
-            sp.call([
-                "rio", "warp", path, dst,
-                "--like", self.template,
-                "--co", "blockysize=128",
-                "--co", "blockxsize=128",
-                "--co", "compress=lzw",  # Check this
-                "--co", "tiled=yes",
-                "--overwrite"
-            ])
+        # Run warp if needed
+        if os.path.exists(dst) and self.overwrite_tif:
+            os.remove(dst)
+        elif not os.path.exists(dst):
+            warp(
+                src=path,
+                dst=dst,
+                template=self.template,
+                creation_ops=self.creation_options
+            )
 
     def reformat_vectors(self):
         """Reformat all vector files in inputs."""
-        # Sequential processing: transform vectors into rasters
+        # Sequential processing for now
         dsts = []
+        print(f"Formatting {len(self.vectors)} vectors...")
         for name, attrs in tqdm(self.vectors.items()):
             # Unpack attributes
             path = attrs["path"]
@@ -767,8 +793,7 @@ class Reformatter(Exclusions):
                 buffer = None
 
             # Create dst path
-            dst_name = name + ".tif"
-            dst = os.path.join(self.out_dir, dst_name)
+            dst = os.path.join(self.out_dir, f"{name}.tif")
             dsts.append(dst)
 
             # Reformat vector
@@ -791,10 +816,11 @@ class Reformatter(Exclusions):
         if not os.path.exists(path):
             raise OSError(f"{path} does not exist.")
 
-        # Skip if overwrite
-        if not self.overwrite_tif and os.path.exists(dst):
-            return
-        else:
+        # Remove if overwrite
+        if self.overwrite_tif and os.path.exists(dst):
+            os.remove(dst)
+
+        if not os.path.exists(dst):
             # Read and process file
             gdf = self._process_vector(name, path, field, buffer)
             meta = self.meta
@@ -808,6 +834,7 @@ class Reformatter(Exclusions):
                 array = features.rasterize(shapes, out_shape, all_touched=True,
                                            transform=transform)
 
+            # Attempt to set best dtype
             dtype = str(array.dtype)
             if "int" in dtype:
                 nodata = np.iinfo(dtype).max
@@ -937,12 +964,8 @@ class Reformatter(Exclusions):
 
     def main(self):
         """Reformat all vectors and rasters listed in the inputs."""
-        print("Formatting rasters...")
         _ = self.reformat_rasters()
-
-        print("Formatting vectors...")
         _ = self.reformat_vectors()
-
         if self.excl_fpath:
             print(f"Building/updating exclusion {self.excl_fpath}...")
             self.to_h5()
