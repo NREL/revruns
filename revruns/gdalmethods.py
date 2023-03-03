@@ -342,7 +342,7 @@ def gdal_progress(complete, message, unknown):
 
 
 def rasterize(src, dst, attribute, t_srs=None, transform=None, height=None,
-              width=None, template_path=None, navalue=None, all_touch=False,
+              width=None, template_path=None, navalue=None, all_touch=True,
               dtype=None, overwrite=False):
     """Rasterize a shapefile stored on disk and write outputs to a file.
 
@@ -369,7 +369,7 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, height=None,
         The value to assign to non-value grid cells. (defaults to -99999)
     all_touch : boolean
         Wether or not to associate vector values with all intersecting grid
-        cells. (defaults to False)
+        cells. (defaults to True)
     dtype : str | gdal object
         GDAL data type. Can be a string or a gdal type object (e.g.
         gdal.GDT_Float32, "GDT_Float32", "float32"). Available GDAL data types
@@ -1286,13 +1286,3 @@ class Map_Values:
             x = self.err_val
 
         return x
-
-
-if __name__ == "__main__":
-    warp(
-        src='/shared-projects/rev/projects/alaska/fy23/data/rasters/slope_20pct.tif',
-        dst='/shared-projects/rev/projects/alaska/fy23/data/exclusions/slope_20pct.tif',
-        template='/shared-projects/rev/projects/alaska/fy23/data/rasters/nlcd_2016_land_cover_ak.tif',
-        creation_ops={'compress': 'lzw', 'tiled': 'yes', 'blockxsize': 128, 'blockysize': 128},
-        overwrite=True
-    )

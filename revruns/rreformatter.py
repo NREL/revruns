@@ -36,7 +36,7 @@ from tqdm import tqdm
 from revruns.gdalmethods import warp
 from revruns.rr import crs_match, isint, isfloat
 
-pyproj.network.set_network_enabled(False)  # Resolves VPN issues
+pyproj.network.set_network_enabled(False)  # For VPN issues
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
@@ -100,8 +100,6 @@ def fopen():
 class Rasterizer:
     """Methods for rasterizing vectors."""
 
-    import rasterio as rio
-
     def __init__(self, flip=False, resolution=90, crs="esri:102008",
                  template=None, temp_dir=None):
         """Initialize Rasterize object.
@@ -154,7 +152,7 @@ class Rasterizer:
 
         # Read in template information
         if self.template:
-            with self.rio.open(self.template) as r:
+            with rio.open(self.template) as r:
                 profile = r.profile
                 self.crs = CRS(profile["crs"])
 
@@ -176,7 +174,7 @@ class Rasterizer:
 
         # If template, use its bounds
         if self.template:
-            with self.rio.open(self.template) as r:
+            with rio.open(self.template) as r:
                 bounds = tuple(r.bounds)
         else:
             bounds = None
@@ -319,7 +317,7 @@ class Rasterizer:
             shapes = [(g, 1) for g in geom]
         
         # Build array
-        array = self.rio.features.rasterize(
+        array = rio.features.rasterize(
             shapes=shapes,
             out_shape=shape,
             transform=transform,

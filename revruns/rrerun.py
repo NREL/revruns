@@ -19,7 +19,7 @@ FOLDER_HELP = ("A folder containing configurations and results "
                "(str)")
 MODULE_HELP = ("A module in the reV pipeline. Options include 'generation', "
                "'collect', 'multi-year', 'aggregation', 'supply-curve', or "
-               "'rep_profiles'. rrerun will overwrite all results in the "
+               "'rep-profiles'. rrerun will overwrite all results in the "
                "pipeline including the given module. (str)")
 RUN_HELP = ("Rerun reV pipeline. Without this, the logging and status "
             "files will be updated and you must rerun manually. (Boolean)")
@@ -34,7 +34,7 @@ MODULE_SHORTS = {"generation": "gen",
                  "multi-year": "multi-year",
                  "supply-curve-aggregation": "_agg",
                  "supply-curve": "_sc",
-                 "rep-profiles": "rep_profiles",
+                 "rep-profiles": "rep-profiles",
                  "qa-qc": "qa-qc"}
 
 

@@ -21,12 +21,14 @@ import numpy as np
 import pandas as pd
 
 from pyproj import CRS
+from shapely.errors import ShapelyDeprecationWarning
 from tqdm import tqdm
 
 pd.set_option("display.max_columns", 500)
 pd.set_option("display.max_rows", 20)
 pd.options.mode.chained_assignment = None
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=ShapelyDeprecationWarning)
 
 
 def crs_match(crs1, crs2):

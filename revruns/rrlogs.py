@@ -87,7 +87,36 @@ SUCCESS_STRINGS = ["successful", "success", "s"]
 UNSUBMITTED_STRINGS = ["unsubmitted", "unsubmit", "u"]
 
 
-class RRLogs():
+def safe_round(x, n):
+    """Round a number to n places if x is a number."""
+    try:
+        xn = round(x, n)
+    except TypeError:
+        xn = x
+    return xn
+
+
+class Log_Finder:
+    """Methods for finding logging information in a run directory."""
+
+
+class No_Pipeline(Log_Finder):
+    """Methods for checking logs without a reV pipeline."""
+
+    def __init__(self, folder=".", error=None, out=None, walk=False):
+        """Initialize NPipeline object."""
+        self.folder = folder
+        self.error = error
+        self.out = out
+        self.walk = walk
+
+    @property
+    def error_logs(self):
+        """Return paths to all error logs."""
+        self.folder
+
+
+class RRLogs(No_Pipeline):
     """Methods for checking rev run statuses."""
 
     def __init__(self, folder=".", module=None, status=None, error=None,
@@ -200,8 +229,8 @@ class RRLogs():
         """Check/return the config_pipeline.json file in the given directory."""
         path = os.path.join(folder, file)
         if not os.path.exists(path):
-            msg = ("No {} files found. If you were looking for nested files, try "
-                   "running the with --walk option.").format(file)
+            msg = (f"No {file} files found. If you were looking for nested "
+                   "files, try running the with --walk option.")
             raise ValueError(Fore.RED + msg + Style.RESET_ALL)
         return path
 
@@ -225,6 +254,9 @@ class RRLogs():
         # If there is a log directory directly in this folder use that
         contents = glob(os.path.join(folder, "*"))
         possibles = [c for c in contents if "log" in c]
+        if len(possibles) == 0:
+            msg = f"No log files found in {folder}."
+            raise OSError(Fore.RED + msg + Style.RESET_ALL)
         if len(possibles) == 1:
             logdir = os.path.join(folder, possibles[0])
             return logdir
@@ -306,9 +338,11 @@ class RRLogs():
                 pid = file[idx + 1:].replace(".e", "")
                 if pid == str(target_pid):
                     pid_dirs.append(folder)
+    
         if not pid_dirs:
             msg = "No log files found for pid {}".format(target_pid)
             raise FileNotFoundError(Fore.RED + msg + Style.RESET_ALL)
+
         return pid_dirs
 
     def find_runtime(self, job):
@@ -436,8 +470,6 @@ class RRLogs():
 
     def module_status_dataframe(self, status, module="gen"):
         """Convert the status entry for a module to a dataframe."""
-        import pandas as pd
-
         # Copy status dictionary
         cstatus = copy.deepcopy(status)
 
@@ -487,8 +519,6 @@ class RRLogs():
 
     def status_dataframe(self, sub_folder, module=None):
         """Convert a status entr into dataframe."""
-        import pandas as pd
-
         # Get the status dictionary
         _, status = self.find_status(sub_folder)
 
@@ -509,7 +539,10 @@ class RRLogs():
                 dfs = []
                 for module_name in modules:
                     module = names_modules[module_name]
-                    mstatus = self.module_status_dataframe(status, module)
+                    try:
+                        mstatus = self.module_status_dataframe(status, module)
+                    except KeyError:
+                        pass
                     dfs.append(mstatus)
                 df = pd.concat(dfs, sort=False)
 
@@ -525,19 +558,11 @@ class RRLogs():
     
             df = df[["index", "job_name", "job_status", "pipeline_index",
                      "job_id", "runtime", "date"]]
-            df["runtime"] = df["runtime"].apply(self.safe_round, n=2)
+            df["runtime"] = df["runtime"].apply(safe_round, n=2)
 
             return df
         else:
             return None
-
-    def safe_round(self, x, n):
-        """Round a number to n places if x is a number."""
-        try:
-            xn = round(x, n)
-        except TypeError:
-            xn = x
-        return xn
 
     def _run(self, args):
         """Print status and job pids for a single project directory."""
@@ -641,21 +666,11 @@ def main(folder, module, status, error, out, walk):
 
 
 if __name__ == "__main__":
-    # folder = "/shared-projects/rev/projects/weto/fy22/bespoke/rev/main/00_2430kw_88hh_116rd"
-    folders = glob("/shared-projects/rev/projects/weto/fy22/bespoke/rev/main/*hh*")
-    hours = 0
-    for folder in folders:
-        print(folder)
-        module = None
-        status = "f"
-        error = None
-        out = None
-        walk = True
-        args = dict(folder=folder, module=module, status=status, error=error,
-                    out=out, walk=walk)
-        self = RRLogs(**args)
-        df = self.status_dataframe(folder, "bespoke")
-        hours += (df["runtime"].sum() / 60)
-
-        # self.main()
-    
+    folder = "/shared-projects/rev/projects/alaska/fy23/rev/downsampled_120m"
+    error = None
+    out = None
+    walk = False
+    module = None
+    status = None
+    # self = NPipeline(folder)
+    self = RRLogs(folder, module, status, error, out, walk)

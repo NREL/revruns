@@ -13,6 +13,7 @@ import pandas as pd
 import rasterio as rio
 
 from revruns import rr
+from revruns.gdalmethods import rasterize
 
 from scipy.spatial import cKDTree
 
@@ -22,19 +23,19 @@ os.environ['PROJ_NETWORK'] = 'OFF'
 FILE_HELP = "The file from which to create the shape geotiff. (str)"
 SAVE_HELP = ("The path to use for the output file. Defaults to current "
              "directory with the basename of the csv/h5 file. (str)")
-VARIABLE_HELP = ("For HDF5 files, the data set to rasterize. For CSV files, the"
-                " field to rasterize. (str)")
+VARIABLE_HELP = ("For HDF5 files, the data set to rasterize. For CSV files, "
+                 "the field to rasterize. (str)")
 CRS_HELP = ("Coordinate reference system. Pass as <'authority':'code'>. (str)")
 RES_HELP = ("Target resolution, in the same units as the CRS. (numeric)")
-AGG_HELP = ("For HDF5 time series, the aggregation function to use to render "
-            " the raster layer. Any appropriate numpy method. If 'layer' is "
-            "provided, this will be ignored."
+AGG_HELP = ("For HDF5 time series, the aggregation function to use to render"
+            " the raster layer. Any appropriate numpy method. If 'layer' is"
+            " provided, this will be ignored."
             " defaults to mean. (str)")
 LAYER_HELP = ("For HDF5 time series, the time index to render. If attempting "
               "to rasterize a time series and this isn't provided, an "
               "aggregation function will be used. Defaults to 0. (int)")
 FILTER_HELP = ("A column name, value pair to use to filter the data before "
-               "rasterizing (e.g. rrraster -f state -f Georgia ...). (list)")
+               "rasterizing (e.g. rraster -f state -f Georgia ...). (list)")
 FILL_HELP = ("Fill na values by interpolation. (boolen)")
 CUT_HELP = ("Path to vector file to use to clip output. (str)")
 
@@ -49,7 +50,7 @@ def csv(src, dst, variable, res, crs, fillna, cutline):
     gdf = gdf.to_crs(crs)
 
     # And finally rasterize
-    rasterize(gdf, res, dst, fillna, cutline)
+    rrasterize(gdf, res, dst, fillna, cutline)
 
 
 def get_scale(ds, variable):
@@ -73,7 +74,7 @@ def gpkg(src, dst, variable, resolution, crs, fillna, cutline):
     # Convert to true grid
 
     # And finally rasterize
-    rasterize(gdf, resolution, dst, fillna, cutline)
+    rrasterize(gdf, resolution, dst, fillna, cutline)
 
 
 def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
@@ -83,25 +84,25 @@ def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
 
     Parameters
     ----------
-    src : TYPE
+    src : str
         DESCRIPTION.
-    dst : TYPE
+    dst : str
         DESCRIPTION.
-    variable : TYPE
+    variable : str
         DESCRIPTION.
-    resolution : TYPE
+    resolution : int
         DESCRIPTION.
-    crs : TYPE
+    crs : str
         DESCRIPTION.
-    agg_fun : TYPE
+    agg_fun : str
         DESCRIPTION.
-    layer : TYPE
+    layer : str
         DESCRIPTION.
-    fltr : TYPE
+    fltr : str
         DESCRIPTION.
-    fillna : TYPE
+    fillna : bool
         DESCRIPTION.
-    cutline : TYPE
+    cutline : str
         DESCRIPTION.
 
     Returns
@@ -139,7 +140,7 @@ def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
     # gdf = to_grid(gdf, variable, resolution)
 
     # And finally rasterize
-    rasterize(gdf, resolution, dst, fillna, cutline)
+    rrasterize(gdf, resolution, dst, fillna, cutline)
 
     return dst
 
@@ -154,7 +155,7 @@ def h5_timeseries(ds, dataset, agg_fun, layer):
     return data
 
 
-def rasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
+def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
     # Make sure we have the target directory
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
 
@@ -187,7 +188,7 @@ def rasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
             "-a_nodata", str(na),
             "-at",
             "-te", *te,
-            "-tr", str(resolution), str(-resolution)
+            "-tr", str(resolution), str(-int(resolution))
         ]
     )
 
@@ -292,19 +293,7 @@ def to_grid(gdf, variable, resolution):
 @click.option("--cutline", "-cl", default=None, help=CUT_HELP)
 def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
          cutline):
-    """REVRUNS - RRASTER - Rasterize a reV output.
-
-    src = "/home/twillia2/transfer/review_01_na_n_mid_sc_vs_01_na_n_mid_old_sc_diff_capacity.csv"
-    dst = "/home/twillia2/transfer/review_01_na_n_mid_sc_vs_01_na_n_mid_old_sc_diff_capacity.tif"
-    variable = "capacity_difference_percent"
-    resolution = 11_520
-    crs = "epsg:5070"
-    agg_fun = "mean"
-    layer = None
-    fltr = None
-    cutline = None
-    fillna = False
-    """
+    """REVRUNS - RRASTER - Rasterize a reV output."""
     # Get the file extension and call the appropriate function
     extension = os.path.splitext(src)[-1]
     if extension == ".h5":
@@ -316,5 +305,11 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
         gpkg(src, dst, variable, resolution, crs, fillna, cutline)
 
 
-# if __name__ == "__main__":
-    # main()
+if __name__ == "__main__":
+    src = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.gpkg"
+    dst = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.tif"
+    resolution = 3_000
+    fillna = False
+    variable = "k"
+    crs = "epsg:7775"
+    cutline = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/districts_discom_7775.gpkg"

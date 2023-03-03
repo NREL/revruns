@@ -249,7 +249,7 @@ class TechPotential(Rasters):
         cmd = f"select * from {schema}.{table};"""
         with pg.connect(**self.con_args) as con:
             df = gpd.GeoDataFrame.from_postgis(cmd, con, crs=crs,
-                                                geom_col=geom)
+                                               geom_col=geom)
 
         # Rename geometry field to something more reasonable
         df = df.rename({geom: "geometry"}, axis=1)
@@ -394,6 +394,6 @@ class TechPotential(Rasters):
 if __name__ == "__main__":
     schema = 0
     table = None
-    country = "mexico"
-    self = TechPotential(schema, table, country)
+    country = "india"
+    self = TechPotential()
     # _ = self._raster()
