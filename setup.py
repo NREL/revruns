@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 from setuptools import setup
+from Cython.Build import cythonize
+
 
 setup(
     name='revruns',
@@ -11,6 +13,7 @@ setup(
                  "Potential Model (reV)."),
     author="Travis Williams",
     author_email="travis.williams@nrel.gov",
+    ext_modules=cythonize("revruns/cython_compute.pyx"),
     include_package_data=True,
     package_data={
         "data": [

@@ -3,7 +3,7 @@ setup.py
 revruns/__init__.py
 revruns/configure.py
 revruns/constants.py
-revruns/find_mixed.py
+revruns/cython_compute.c
 revruns/gdalmethods.py
 revruns/paths.py
 revruns/rev_to_reeds.py

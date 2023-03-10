@@ -34,7 +34,7 @@ def check_status(pdir):
         status_dir = os.path.dirname(status_file)
         pipeline_file = os.path.join(status_dir, "config_pipeline.json")
         pipeline = json.load(open(pipeline_file, "r"))
-    except TypeError:
+    except (OSError, TypeError):
         status = None
 
     if status:
@@ -89,7 +89,6 @@ def rrpipeline(dirpath, walk, file, print_paths):
             if not successful:
                 print(Fore.CYAN + "Submitting " + rpath + "..."
                       + Style.RESET_ALL)
-                name = "_".join(os.path.dirname(path).split("/")[-3:])
                 cmd = (f"nohup reV -c {path} pipeline --monitor")
                 cmd = shlex.split(cmd)
                 output = os.path.join(os.path.dirname(path), "pipeline.out")
@@ -108,7 +107,7 @@ def rrpipeline(dirpath, walk, file, print_paths):
 
 
 if __name__ == "__main__":
-    dirpath = "."
+    dirpath = "/shared-projects/rev/projects/puerto_rico/fy22/pr100/projects/forecasts/rev/wind_offshore_one_day/aggregation"
     walk = True
     file = "config_pipeline.json"
     print_paths = False

@@ -1,7 +1,8 @@
-name: revruns
+name: devruns
 channels:
   - nrel
   - conda-forge
+  - anaconda
   - defaults
 dependencies:
   - colorama
@@ -12,6 +13,7 @@ dependencies:
   - ipython
   - numpy
   - pandas
+  - pyqt
   - python=3.9
   - rasterio
   - rioxarray

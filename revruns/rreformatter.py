@@ -543,8 +543,14 @@ class Exclusions:
             tcrs = CRS("epsg:4326")
         elif "North American Datum 1983" in crs.datum.name:
             tcrs = CRS("epsg:4269")
+        elif "Unkown" in crs.datum.name:
+            tcrs = CRS("epsg:4269")
+        else:
+            tcrs = CRS("epsg:4326")
+
         transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
         lons, lats = transformer.transform(mx, my)
+
         return lons, lats
 
     def _get_coords(self):
