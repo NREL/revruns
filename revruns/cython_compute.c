@@ -2483,7 +2483,7 @@ static PyObject *__pyx_pf_7revruns_14cython_compute_ccompute(CYTHON_UNUSED PyObj
   __pyx_t_5.data = NULL;
 
   /* "revruns/cython_compute.pyx":41
- *     cdef Py_ssize_t x, y  # This is the suggest int type for array indexing
+ *     cdef Py_ssize_t x, y  # This is the suggested int type for array indexing
  * 
  *     for x in range(x_max):             # <<<<<<<<<<<<<<
  *         for y in range(y_max):

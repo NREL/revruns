@@ -44,99 +44,32 @@ INPUTS = {
         "name": "United States of America",
         "feature": "rev_conus_trans_lines",
         "excl_fpath": "/projects/rev/data/exclusions/CONUS_Exclusions.h5",
+        "trans_lines": None,
         "crs": "esri:102003"
     },
     "canada": {
         "name": "Canada",
         "feature": "rev_can_trans_lines",
         "excl_fpath": "/projects/rev/data/exclusions/Canada_Exclusions.h5",
+        "trans_lines": None,
         "crs": "esri:102001"
     },
     "mexico": {
         "name": "Mexico",
         "feature": "rev_mex_trans_lines",
         "excl_fpath": "/projects/rev/data/exclusions/Mexico_Exclusions.h5",
+        "trans_lines": None,
         "crs": ("+proj=aea +lat_1=14.5 +lat_2=32.5 +lat_0=24 +lon_0=-105 "
                 "+x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs ")  # SR-ORG:28
+    },
+    "india": {
+        "name": "India",
+        "feature": "rev_india_trans_lines_2",
+        "excl_fpath": "/projects/rev/data/exclusions/India_Exclusions.h5",
+        "trans_lines": "/projects/rev/data/transmission/shapefiles/rev_india_trans_lines_2.gpkg",
+        "crs": "epsg:7755"
     }
 }
-
-def add_coordinates(sc, points):
-    """Add average supply curve area coordinates to point table."""
-    # Get column and row indices
-    sc_cols, sc_rows = np.meshgrid(
-        np.arange(sc.n_cols),
-        np.arange(sc.n_rows)
-    )
-    rows = sc_rows.flatten()
-    cols = sc_cols.flatten()
-
-    # Calculate the coordinates for each point
-    latlons = self._get_coords(sc, rows, cols)
-    points.loc[:, "latitude"] = latlons[:, 0]
-    points.loc[:, "longitude"] = latlons[:, 1]
-
-    return points
-
-
-def build_points(country, resolution, dst):
-    """"Build and save a new point data set."""
-    # Build initial point indices
-    sc = SupplyCurveExtent(
-        f_excl=INPUTS[country]["excl_fpath"],
-        resolution=resolution
-    )
-    points = sc.points
-    points["sc_point_gid"] = points.index
-    points = points.rename({"row_ind": "sc_row_ind",
-                            "col_ind": "sc_col_ind"},
-                            axis=1)
-
-    # Chunk a list of sc_cols and rows
-    points = add_coordinates(sc, points)
-
-    # Convert to target geodataframe
-    profile = get_profile(country)
-    points = points.rr.to_geo()
-    points = clip_land(points, profile, resolution)
-
-    # Save
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    points.to_file(dst, driver="GPKG")
-
-    return points
-
-def clip_land(points, profile, resolution):
-    """Clip out land, subset for CONUS if needed."""
-    # Get country geometry
-    df = gpd.read_file(BOUNDARIES)
-    df = df[["NAME", "geometry"]]
-    df = df[df["NAME"] == INPUTS[self.country]["name"]]
-
-    # If CONUS
-    if self.country == "conus":
-        # Just keep the biggest polygon
-        geoms = df["geometry"].iloc[0]
-        areas = np.array([g.area for g in geoms])
-        idx = np.where(areas == max(areas))[0][0]
-        df["geometry"] = geoms[idx]
-
-    # Reproject to local
-    df = df.to_crs(INPUTS[self.country]["crs"])
-    points = points.to_crs(INPUTS[self.country]["crs"])
-
-    # Clip points file
-    buffer = (profile["transform"][0] * resolution) / 2
-    points["geometry"] = points["geometry"].buffer(buffer).envelope
-    points = points[points["latitude"] != np.inf]
-    points = gpd.overlay(points, df, how="intersection")        
-
-    # Reset geometry
-    del points["geometry"]
-    points = pd.DataFrame(points)
-    points = points.rr.to_geo()
-
-    return points
 
 
 def get_profile(country):
@@ -146,16 +79,18 @@ def get_profile(country):
     return profile
 
 
-class Transmission():
+class Transmission:
     """Methods for connecting supply curve points to transmission."""
 
-    def __init__(self, home=".", country="conus", resolution=128):
+    def __init__(self, home=".", country="conus", resolution=128, sample=None,
+                 overwrite=False):
         """Initialize Transmission object."""
         self.country = country
-        self.db = TechPotential(schema="transmission")
+        self.db = TechPotential(country="india", schema="transmission")
         self.resolution = resolution
         self.home = Path(home).expanduser().absolute()
-        self._preflight()
+        self.overwrite = overwrite
+        self._preflight(sample)
 
     def __repr__(self):
         """Return representation string."""
@@ -167,6 +102,91 @@ class Transmission():
             if not key.startswith("_") and key not in excludes:
                 attrs.append(f"{key}={attr}")
         return f"<{self.__class__.__name__} object: {', '.join(attrs)}>"
+
+    def add_coordinates(self, sc, points, sample=None):
+        """Add average supply curve area coordinates to point table."""
+        # Get column and row indices
+        sc_cols, sc_rows = np.meshgrid(
+            np.arange(sc.n_cols),
+            np.arange(sc.n_rows)
+        )
+        rows = sc_rows.flatten()
+        cols = sc_cols.flatten()
+
+        # Reduce for sample
+        if sample is not None:
+            halfway = sc.points.shape[0] // 2
+            rows = rows[halfway: halfway + sample]
+            cols = cols[halfway: halfway + sample]
+
+        # Calculate the coordinates for each point
+        latlons = self._get_coords(sc, rows, cols)
+        points.loc[:, "latitude"] = latlons[:, 0]
+        points.loc[:, "longitude"] = latlons[:, 1]
+
+        return points
+
+    def build_points(self, sample=None):
+        """"Build and save a new point data set."""
+        # Build initial point indices
+        sc = SupplyCurveExtent(
+            f_excl=INPUTS[self.country]["excl_fpath"],
+            resolution=self.resolution
+        )
+        points = sc.points
+        if sample is not None:
+            halfway = sc.points.shape[0] // 2
+            points = points.iloc[halfway: halfway + sample]
+        points["sc_point_gid"] = points.index
+        points = points.rename({"row_ind": "sc_row_ind",
+                                "col_ind": "sc_col_ind"},
+                                axis=1)
+
+        # Chunk a list of sc_cols and rows
+        points = self.add_coordinates(sc, points, sample)
+
+        # Convert to target geodataframe
+        profile = get_profile(self.country)
+        points = points.rr.to_geo()
+        points = self.clip_land(points, profile)
+
+        # Save
+        self.point_fpath.parent.mkdir(parents=True, exist_ok=True)
+        points.to_file(self.point_fpath, driver="GPKG")
+
+        return points
+
+    def clip_land(self, points, profile):
+        """Clip out land, subset for CONUS if needed."""
+        # Get country geometry
+        df = gpd.read_file(BOUNDARIES)
+        df = df[["NAME", "geometry"]]
+        df = df[df["NAME"] == INPUTS[self.country]["name"]]
+
+        # If CONUS
+        if self.country == "conus":
+            # Just keep the biggest polygon
+            geoms = df["geometry"].iloc[0]
+            areas = np.array([g.area for g in geoms])
+            idx = np.where(areas == max(areas))[0][0]
+            df["geometry"] = geoms[idx]
+
+        # Reproject to local
+        df = df.to_crs(INPUTS[self.country]["crs"])
+        ppoints = points.to_crs(INPUTS[self.country]["crs"])
+
+        # Clip points file
+        buffer = (profile["transform"][0] * self.resolution) / 2
+        points["geometry"] = points["geometry"].buffer(buffer).envelope
+        ppoints = ppoints[points["latitude"] != np.inf]
+        opoints = gpd.overlay(ppoints, df, how="intersection")        
+
+        # Reset geometry
+        del points["geometry"]
+        points = pd.DataFrame(points)
+        points = points.rr.to_geo()
+
+        return points
 
     def distance(self, row):
         """Find the closest point on the closest line to the target point."""
@@ -195,13 +215,11 @@ class Transmission():
                         dependencies.append(dep)
 
         # Assign distances and convert to miles
-        close_features["dist_m"] = dist_m
-        close_features["dist_mi"] = close_features["dist_m"] / 1_609.34
-        del close_features["dist_m"]
+        close_features["dist_mi"] = np.array(dist_m) / 1_609.34
 
         # Add in substation dependencies with large artifial distance
         missing = features[features["trans_gid"].isin(dependencies)]
-        missing["dist_mi"] = 9_999_999
+        missing["dist_mi"] = 999_999
         if missing.shape[0] > 0:
             close_features = pd.concat([close_features, missing])
 
@@ -222,10 +240,12 @@ class Transmission():
             for c in tqdm(pool.imap(self._distance_chunk, chunks), total=ncpu):
                 out.append(c)
 
-        # out = points.parallel_apply(self.distance, axis=1)
         connections = pd.concat(out)
         drops = ["geometry", "bgid", "egid", "voltage"]
-        connections = connections.drop(drops, axis=1)
+        for drop in drops:
+            if drop in connections:
+                del connections[drop]
+
         return connections
 
     def set_features(self):
@@ -360,7 +380,7 @@ class Transmission():
 
         return connections
 
-    def _preflight(self):
+    def _preflight(self, sample=None):
         """Initialize more attributes."""
         # Get profile from h5 file
         self.profile = get_profile(self.country)
@@ -369,21 +389,23 @@ class Transmission():
         # Build supply curve points if needed
         fname = f"build_{self.resolution:03d}_agg.gpkg"
         self.point_fpath = self.home.joinpath(f"{self.country}/agtables/{fname}")
+        if self.overwrite and self.point_fpath.exists():
+            os.remove(self.point_fpath)
         if not self.point_fpath.exists():
-            build_points(self.country, self.resolution, self.point_fpath)
+            self.build_points(sample=sample)
 
         # Let's try setting the features as an attribute to avoid mp caching
         self.set_features()
 
-    def main(self, overwrite=False):
+    def main(self):
         """Build a connection table for a given country and resolution"""
         # Build destination path
         fname = f"connections_{self.resolution:03d}.csv"
         dst = self.home.joinpath(f"{self.country}/{fname}")
 
         # Check if it exists and needs to be overwritten
-        if dst.exists() and overwrite:
-            os.remove(dst)       
+        if dst.exists() and self.overwrite:
+            os.remove(dst)
         if dst.exists():
             print(f"{dst} exists, skipping. Use overwrite option to rebuild.")
 
@@ -394,15 +416,14 @@ class Transmission():
             points = self.sc_points
 
             # Apply the distance function to each row
-            # print("USING SAMPLE POINTS!")
-            # points = points.iloc[:1_000]
             connections = self.distance_parallel(points)
  
             # Add missing substation dependencies
-            # n_missing = len(self._find_missing_lines(connections))
+            n_missing = len(self._find_missing_lines(connections))
+            print(f"\n{(n_missing)} substations with missing lines")
             # if n_missing > 0:
-            #     print(f"\n{(n_missing)} substations with missing lines, "
-            #           "fixing...")
+                # print(f"\n{(n_missing)} substations with missing lines, "
+                #       "fixing...")
             #     connections = self._fix_missing_lines(connections)
 
             # Write to file
@@ -415,9 +436,23 @@ class Transmission():
 
 
 if __name__ == "__main__":
+    # Pull out user argument for country and resolution
     if len(sys.argv) == 2:
         country = sys.argv[1]
     else:
-        country = "canada"
-    builder = self = Transmission(country=country, home=HOME)
-    builder.main(overwrite=True)
+        country = "india"
+
+    if len(sys.argv) == 3:
+        resolution = sys.argv[2]
+    else:
+        resolution = 64
+
+    # Build the table
+    builder = Transmission(
+        country=country,
+        home=HOME,
+        resolution=resolution,
+        sample=None,
+        overwrite=True
+    )
+    builder.main()

@@ -252,12 +252,14 @@ class TechPotential(Rasters):
                                                geom_col=geom)
 
         # Rename geometry field to something more reasonable
+        if geom != "geometry" and "geometry" in df:
+            del df["geometry"]
         df = df.rename({geom: "geometry"}, axis=1)
         df = df.set_geometry("geometry")
 
         # Remove other geom columns
         for gcol in self.get_geoms(table):
-            if gcol in df:
+            if gcol in df and gcol != "geometry":
                 del df[gcol]
 
         # Jsonify any illegal types (just lists for now)
@@ -273,6 +275,7 @@ class TechPotential(Rasters):
         table = self._table(table)
         geom = self.get_geom(table)
         cmd = f"select ST_SRID({geom}) from {schema}.{table} limit 1;"
+        cmd = f"SELECT Find_SRID('{schema}', '{table}', '{geom}')"
         with pg.connect(**self.con_args) as con:
             with con.cursor() as cursor:
                 cursor.execute(cmd)
@@ -285,9 +288,17 @@ class TechPotential(Rasters):
         else:
             code = "epsg"
 
+        # Also struggling with the India SRID
+        if srs == 98873:
+            proj = ("+proj=laea +lat_0=20.1543162399471 "
+                    "+lon_0=82.5182993854757 +x_0=0 +y_0=0 +ellps=WGS84 "
+                    "+units=m +no_defs +type=crs")
+        else:
+            proj = f"{code}:{srs}"
+
         try:
-            pyproj.CRS(f"{code}:{srs}")
-            srs = f"{code}:{srs}"
+            pyproj.CRS(proj)
+            srs = proj
         except pyproj.exceptions.CRSError:
             if crs:
                 srs = crs
@@ -394,6 +405,5 @@ class TechPotential(Rasters):
 if __name__ == "__main__":
     schema = 0
     table = None
-    country = "india"
-    self = TechPotential()
-    # _ = self._raster()
+    country = "conus"
+    db = TechPotential()

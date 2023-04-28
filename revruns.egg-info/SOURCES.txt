@@ -4,6 +4,7 @@ revruns/__init__.py
 revruns/configure.py
 revruns/constants.py
 revruns/cython_compute.c
+revruns/find_mixed.py
 revruns/gdalmethods.py
 revruns/paths.py
 revruns/rev_to_reeds.py

@@ -196,7 +196,8 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
     if fillna:
         tmp_dst = dst.replace(".tif", "_tmp.tif")
         sp.call(["gdal_fillnodata.py", dst, tmp_dst])
-        os.remove(dst)
+        if os.path.exists(dst):
+            os.remove(dst)
         shutil.move(tmp_dst, dst)
 
     # Cut to vector

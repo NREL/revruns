@@ -681,5 +681,4 @@ if __name__ == "__main__":
     just_agg = False
     exclusions = EXCL_PATHS["onshore"][country]
     self = Connections(allocation, home, country=country)
-
-    # main()
+    main()
