@@ -44,29 +44,25 @@ INPUTS = {
         "name": "United States of America",
         "feature": "rev_conus_trans_lines",
         "excl_fpath": "/projects/rev/data/exclusions/CONUS_Exclusions.h5",
-        "trans_lines": None,
         "crs": "esri:102003"
     },
     "canada": {
         "name": "Canada",
         "feature": "rev_can_trans_lines",
         "excl_fpath": "/projects/rev/data/exclusions/Canada_Exclusions.h5",
-        "trans_lines": None,
         "crs": "esri:102001"
     },
     "mexico": {
         "name": "Mexico",
         "feature": "rev_mex_trans_lines",
         "excl_fpath": "/projects/rev/data/exclusions/Mexico_Exclusions.h5",
-        "trans_lines": None,
         "crs": ("+proj=aea +lat_1=14.5 +lat_2=32.5 +lat_0=24 +lon_0=-105 "
                 "+x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs ")  # SR-ORG:28
     },
     "india": {
         "name": "India",
-        "feature": "rev_india_trans_lines_2",
+        "feature": "rev_india_trans_lines_3",
         "excl_fpath": "/projects/rev/data/exclusions/India_Exclusions.h5",
-        "trans_lines": "/projects/rev/data/transmission/shapefiles/rev_india_trans_lines_2.gpkg",
         "crs": "epsg:7755"
     }
 }
@@ -387,10 +383,18 @@ class Transmission:
         self.crs = self.profile["crs"]
 
         # Build supply curve points if needed
-        fname = f"build_{self.resolution:03d}_agg.gpkg"
-        self.point_fpath = self.home.joinpath(f"{self.country}/agtables/{fname}")
-        if self.overwrite and self.point_fpath.exists():
-            os.remove(self.point_fpath)
+        if sample is not None:
+            fname = f"build_{self.resolution:03d}_sample_agg.gpkg"
+        else:
+            fname = f"build_{self.resolution:03d}_agg.gpkg"
+
+        rpath = f"{self.country}/agtables/{fname}"
+        self.point_fpath = self.home.joinpath(rpath)
+        
+        if sample is not None:
+            if self.point_fpath.exists():
+                os.remove(self.point_fpath)
+
         if not self.point_fpath.exists():
             self.build_points(sample=sample)
 
@@ -448,11 +452,11 @@ if __name__ == "__main__":
         resolution = 64
 
     # Build the table
-    builder = Transmission(
+    builder = self = Transmission(
         country=country,
         home=HOME,
         resolution=resolution,
-        sample=None,
-        overwrite=True
+        sample=100,
+        overwrite=False
     )
-    builder.main()
+    # builder.main()
