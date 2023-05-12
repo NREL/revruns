@@ -1,4 +1,4 @@
-name: devruns
+name: revruns
 channels:
   - nrel
   - conda-forge
@@ -8,11 +8,12 @@ dependencies:
   - colorama
   - descartes
   - gdal
-  - geopandas=0.11.1
+  - geopandas
   - h5py
   - ipython
   - numpy
   - pandas
+  - pygeos
   - pyqt
   - python=3.9
   - rasterio
@@ -30,8 +31,7 @@ dependencies:
     - h5pyd
     - ipywidgets
     - openpyxl
-    - pgpasslib
-    - pathos
     - pandarallel
     - pathos
+    - pgpasslib
     - us

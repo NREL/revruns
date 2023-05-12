@@ -25,8 +25,8 @@ HELP = {
 
 
 def composite(config, dst=None):
-    """Combine exclusion layers into one composite inclusion raster.
-    
+    """Use an aggregation config to build a composite inclusion raster.
+
     Parameters
     ----------
     config: str
@@ -48,18 +48,24 @@ def composite(config, dst=None):
     with open(config, "r") as file:
         conf = json.load(file)
     excl_dict = conf["excl_dict"]
-    excl_h5 = conf["excl_fpath"]
+    excl_fpath = conf["excl_fpath"]
 
+    # Run composite builder
+    _composite(excl_dict, excl_fpath, dst)
+
+
+def _composite(excl_dict, excl_fpath, dst):
+    """Use an exclusion dictionary, hdf5 fpath, and destination path."""
     # Run reV to merge
-    masker = ExclusionMaskFromDict(excl_h5, layers_dict=excl_dict)
+    masker = ExclusionMaskFromDict(excl_fpath, layers_dict=excl_dict)
     mask = masker.mask
     mask = mask.astype("uint8")
 
     # Get a raster profile from the h5 dataset
-    if isinstance(excl_h5, list):
-        template = excl_h5[0]
+    if isinstance(excl_fpath, list):
+        template = excl_fpath[0]
     else:
-        template = excl_h5
+        template = excl_fpath
     with h5py.File(template, "r") as ds:
         profile = json.loads(ds.attrs["profile"])
     profile["dtype"] = str(mask.dtype)
@@ -70,7 +76,6 @@ def composite(config, dst=None):
     profile["compress"] = "lzw"
 
     # Save to a single raster
-    # os.makedirs(os.path.dirname(dst), exist_ok=True)
     print(f"Saving output to {dst}...")
     with rio.open(dst, "w", **profile) as file:
         file.write(mask, 1)

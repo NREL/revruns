@@ -1099,7 +1099,6 @@ class Profiles:
             gids = row["gen_gids"]
             for g in gids:
                 if g in master_gids:
-                    break
                     gids.remove(g)
                 else:
                     master_gids.append(g)
