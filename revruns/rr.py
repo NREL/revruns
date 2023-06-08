@@ -702,7 +702,8 @@ class PandasExtension:
         # For each type fill in the empty array
         for (i, k) in enumerate(array.dtype.names):
             try:
-                if dtypes[i].str.startswith('|S'):
+                sample = df[k].iloc[0]
+                if dtypes[i].str.startswith('|S') and isinstance(sample, str):
                     array[k] = df[k].str.encode('utf-8').astype('S')
                 else:
                     array[k] = v[:, i]

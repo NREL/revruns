@@ -16,6 +16,7 @@ dependencies:
   - pygeos
   - pyqt
   - python=3.9
+  - psycopg2
   - rasterio
   - rioxarray
   - tabulate
@@ -27,6 +28,7 @@ dependencies:
   - pip:
     - addfips
     - cpi
+    - Cython
     - HOPP==0.0.5
     - h5pyd
     - ipywidgets

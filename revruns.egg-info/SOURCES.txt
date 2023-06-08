@@ -41,3 +41,4 @@ revruns.egg-info/top_level.txt
 revruns/data/input_guide.txt
 revruns/data/rev_inputs.xlsx
 revruns/data/us-state-ansi-fips.csv
+tests/test_rreformatter.py

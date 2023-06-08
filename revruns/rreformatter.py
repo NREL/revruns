@@ -727,7 +727,7 @@ class Reformatter(Exclusions):
         """Return list of all rasters in inputs."""
         rasters = {}
         for name, attrs in self.inputs.items():
-            if attrs["path"].split(".")[-1] == "tif":
+            if str(attrs["path"]).split(".")[-1] == "tif":
                 rasters[name] = attrs
 
         return rasters
@@ -739,7 +739,7 @@ class Reformatter(Exclusions):
         print(f"Formatting {len(self.rasters)} rasters...")
         for name, attrs in self.rasters.items():
             # Set paths
-            path = attrs["path"]
+            path = str(attrs["path"])
             dst = os.path.join(self.out_dir, f"{name}.tif")
             dsts.append(dst)
 
@@ -864,6 +864,8 @@ class Reformatter(Exclusions):
                 with h5py.File(self.excl_fpath, "r+") as ds:
                     for akey, attr in attrs.items():
                         if attr:
+                            if isinstance(attr, PosixPath):
+                                attr = str(attr)
                             ds[name].attrs[akey] = attr
 
     @property
