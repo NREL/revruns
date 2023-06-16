@@ -208,32 +208,19 @@ class TechPotential(Rasters):
             raise LookupError(msg)
 
         # Build kwargs
-        kwargs = {"user": user, "host": host, "dbname": dbname, "user": user,
+        kwargs = {"user": user, "host": host, "dbname": dbname, 
                   "password": password, "port": port}
 
         return kwargs
 
-    def schemas(self, grep=None):
-        """Print available schemas in database."""
-        # Get full schema dictionary
-        schemas = self._schemas(grep)
-
-        # Print each
-        for i, schema in schemas.items():
-            if grep and grep not in schema:
-                continue
-            print(f"{i}: {schema}")
-
-    def tables(self, grep=None, schema=None):
-        """Print an indexed list of all tables in a schema with a pattern."""
-        # Get initial list of tables
-        tables = self._tables(schema)
-
-        # Print each
-        for i, table in tables.items():
-            if grep and grep not in table:
-                continue
-            print(f"{i}: {table}")
+    def find(self, grep):
+        """Find a table by searching all schemas with a grep pattern."""
+        out = {}
+        for _, schema in self._schemas().items():
+            for _, table in self._tables(schema=schema).items():
+                if grep in table:
+                    out[schema] = table
+        return out
 
     def get(self, schema=None, table=None, crs=None):
         """Get a dataset given a schema and table name."""
@@ -265,7 +252,7 @@ class TechPotential(Rasters):
         # Jsonify any illegal types (just lists for now)
         for col in df.columns:
             if any([isinstance(r, list) for r in df[col].values]):
-                df[col] = df[col].apply(lambda x: json.dumps(x))
+                df[col] = df[col].apply(json.dumps)
 
         return df
 
@@ -337,6 +324,32 @@ class TechPotential(Rasters):
         gcols = [col for col in columns if "geom" in col]
         return gcols
 
+    def schemas(self, grep=None):
+        """Print available schemas in database."""
+        # Get full schema dictionary
+        schemas = self._schemas(grep)
+
+        # Print each
+        for i, schema in schemas.items():
+            if grep and grep not in schema:
+                continue
+            print(f"{i}: {schema}")
+
+        return schemas
+
+    def tables(self, grep=None, schema=None):
+        """Print an indexed list of all tables in a schema with a pattern."""
+        # Get initial list of tables
+        tables = self._tables(schema)
+
+        # Print each
+        for i, table in tables.items():
+            if grep and grep not in table:
+                continue
+            print(f"{i}: {table}")
+
+        return tables
+
     def _schema(self, schema=None):
         """Use schema attribute if no argument given."""
         schemas = self._schemas(schema)
@@ -402,8 +415,8 @@ class TechPotential(Rasters):
         return tables
 
 
-if __name__ == "__main__":
-    schema = 0
-    table = None
-    country = "conus"
-    db = TechPotential()
+# if __name__ == "__main__":
+#     schema = 0
+#     table = None
+#     country = "conus"
+#     db = TechPotential()

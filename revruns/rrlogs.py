@@ -566,6 +566,7 @@ class RRLogs(No_Pipeline):
 
     def _run(self, args):
         """Print status and job pids for a single project directory."""
+        # Unpack args
         folder, sub_folder, module, status, error, out = args
 
         # Expand folder path
@@ -582,7 +583,7 @@ class RRLogs(No_Pipeline):
             if status:
                 df = self.check_entries(df, status)
 
-            if not error and not out:
+            if not error and not out and df.shape[0] > 0:
                 print_folder = os.path.relpath(sub_folder, folder)
                 self.color_print(df, print_folder, logdir)
 
@@ -626,11 +627,8 @@ class RRLogs(No_Pipeline):
 
         # Run rrlogs for each
         if len(folders) > 1:
-            arg_list = []
-            for f in folders:
-                args = (folder, f, module, status, error, out)
-                arg_list.append(args)
-            for args in arg_list:
+            for sub_folder in folders:
+                args = (folder, sub_folder, module, status, error, out)
                 _ = self._run(args)
         else:
             args = (folder, folders[0], module, status, error, out)
@@ -665,12 +663,12 @@ def main(folder, module, status, error, out, walk):
     rrlogs.main()
 
 
-if __name__ == "__main__":
-    folder = "/shared-projects/rev/projects/alaska/fy23/rev/downsampled_120m"
-    error = None
-    out = None
-    walk = False
-    module = None
-    status = None
-    # self = NPipeline(folder)
-    self = RRLogs(folder, module, status, error, out, walk)
+# if __name__ == "__main__":
+#     folder = "/shared-projects/rev/projects/puerto_rico/fy23/pr100/rev/wind/forecasts"
+#     error = None
+#     out = None
+#     walk = True
+#     module = None
+#     status = "f"
+#     # self = NPipeline(folder)
+#     self = RRLogs(folder, module, status, error, out, walk)

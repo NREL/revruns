@@ -1,4 +1,5 @@
-"""
+"""GDAL Methods
+
 A set of functions for performing common spatial transformations using GDAL
 bindings, geopandas, rasterio, and shapely.
 
@@ -1103,9 +1104,8 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
         xmin, xres, xrot, ymax, yrot, yres = transform
         xs = [xmin + xres * i for i in range(width)]
         ys = [ymax + yres * i for i in range(height)]
-        xmax = max(xs) + 0.5 * xres
-        ymax = ymax + 0.5 * xres
-        ymin = min(ys)
+        xmax = max(xs) + xres
+        ymin = min(ys) + yres
         extent = [xmin, ymin, xmax, ymax]
         kwargs["dstSRS"] = srs
         kwargs["outputBounds"] = extent
