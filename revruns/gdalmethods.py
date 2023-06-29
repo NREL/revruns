@@ -505,7 +505,7 @@ def read_raster(rasterpath, band=1, navalue=-9999):
         navalue = np.nanmin(array)
     array[array == navalue] = np.nan
 
-    return(array, geometry, arrayref)
+    return (array, geometry, arrayref)
 
 
 def reproject_polygon(src, dst, t_srs):

@@ -11,6 +11,8 @@ import os
 import shlex
 import subprocess as sp
 
+from pathlib import Path
+
 from colorama import Fore, Style
 from revruns.rrlogs import RRLogs
 from rex.utilities.execution import SubprocessManager
@@ -43,13 +45,13 @@ def check_status(pdir):
             statuses = []
             for m in modules:
                 entry = status[m]
-
-                try:
-                    jobname = list(entry.keys())[1]
-                    jobstatus = status[m][jobname]["job_status"]
-                except IndexError:
-                    jobstatus = "not submitted"
-                statuses.append(jobstatus)
+                for key in list(entry.keys())[1:]:
+                    try:
+                        jobname = entry[key]
+                        jobstatus = entry[key]["job_status"]
+                    except IndexError:
+                        jobstatus = "not submitted"
+                    statuses.append(jobstatus)
             if all([s == "successful" for s in statuses]):
                 successful = True
 
@@ -69,6 +71,9 @@ def rrpipeline(dirpath, walk, file, print_paths):
     print(Fore.CYAN + f"Running rrpipeline for {dirpath}..." + Style.RESET_ALL)
     if walk:
         config_paths = rrlogs.find_files(dirpath, file)
+        config_paths = [  # Remove top level pipeline for batch runs
+            path for path in config_paths if str(Path(path).parent) != dirpath
+        ]
     else:
         config_paths = [rrlogs.find_file(dirpath, file)]
 
@@ -107,7 +112,7 @@ def rrpipeline(dirpath, walk, file, print_paths):
 
 
 if __name__ == "__main__":
-    dirpath = "/shared-projects/rev/projects/puerto_rico/fy22/pr100/projects/forecasts/rev/wind_offshore_one_day/aggregation"
+    dirpath = "/shared-projects/rev/projects/hfto/fy23/rev/hydrogen/curve/00_wind_baseline_reference"
     walk = True
     file = "config_pipeline.json"
     print_paths = False

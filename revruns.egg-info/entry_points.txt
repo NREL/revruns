@@ -7,6 +7,7 @@ rrcheck = revruns.rrcheck:main
 rrcomposite = revruns.rrcomposite:main
 rrconnections = revruns.rrconnections:main
 rrerun = revruns.rrerun:main
+rreset = revruns.rreset:main
 rrexclusion = revruns.rrexclusion:main
 rrgeoref = revruns.rrgeoref:main
 rrgraphs = revruns.rrgraphs:main

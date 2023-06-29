@@ -29,6 +29,7 @@ setup(
                         "rrconnections = revruns.rrconnections:main",
                         "rrcomposite = revruns.rrcomposite:main",
                         "rrerun = revruns.rrerun:main",
+                        "rreset = revruns.rreset:main",
                         "rrexclusion = revruns.rrexclusion:main",
                         "rrgraphs = revruns.rrgraphs:main",
                         "rrgeoref = revruns.rrgeoref:main",

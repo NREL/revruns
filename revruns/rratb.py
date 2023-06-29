@@ -43,7 +43,7 @@ TECHNOLOGIES = {
     "wind_distributed_large": "Large DW",
     "wind_distributed_mid": "Midsize DW",
     "wind_distributed_residential": "Residential DW",
-    "wind_onshore_utility": "Land-based Wind",
+    "wind_onshore_utility": "Land-Based Wind",
     "wind_offshore_utility": "OffShore Wind",
 }
 CASES = {
@@ -66,20 +66,51 @@ class ATB:
         self.lifetime = lifetime
         self.scenario = scenario
         self.tech = tech
-        self.home = Paths.data
+        self.tech_test = tech
+        self.data_home = Paths.data
         self.host = "https://oedi-data-lake.s3.amazonaws.com"
         self.url = f"{self.host}/ATB/electricity/csv/{atb_year}/ATBe.csv"
 
     def __repr__(self):
         """Return ATB representation string."""
-        msgs = [f"{k}={v}" for k, v in self.__dict__.items()]
+        address = hex(id(self))
+        msgs = [f"\n   {k}={v}" for k, v in self.__dict__.items()]
         msg = ", ".join(msgs)
-        return f"<ATB object: {msg}>"
+        return f"<ATB object at {address}>: {msg}"
+
+    @property
+    def capex(self):
+        """Return capex for given tech and year."""
+        df = self.data
+        df = df[df["core_metric_parameter"] == "CAPEX"]
+        capex = df["value"].iloc[0]
+        return capex
+
+    @property
+    def confin(self):
+        """Return construction financing factor for given tech and year."""
+        df = self.data
+        param = "Interest During Construction  - Nominal"
+        df = df[df["core_metric_parameter"] == param]
+        capex = df["value"].iloc[0]
+        return capex
+
+    @property
+    def data(self):
+        """Return the filtered dataset."""
+        df = self.full_data
+        df = df[df["technology_alias"] == TECHNOLOGIES[self.tech]]
+        df = df[df["core_metric_variable"] == self.cost_year]
+        df = df[df["scenario"] == self.scenario.capitalize()]  # This filters out the construction financing
+        df = df[df["core_metric_case"] == CASES[self.case]]
+        df = df[df["crpyears"] == str(self.lifetime)]
+        df.reset_index(drop=True, inplace=True)
+        return df
 
     @property
     def local_path(self):
         """Return the package data path for a stored table."""
-        lpath = self.home.joinpath("atb", str(self.atb_year), "ATBe.csv")
+        lpath = self.data_home.joinpath("atb", str(self.atb_year), "ATBe.csv")
         lpath.parent.mkdir(exist_ok=True, parents=True)
         return lpath
 
@@ -101,16 +132,12 @@ class ATB:
         return df
 
     @property
-    def data(self):
-        """Return the filtered dataset."""
-        df = self.full_data
-        df = df[df["technology_alias"] == TECHNOLOGIES[self.tech]]
-        df = df[df["core_metric_variable"] == self.cost_year]
-        df = df[df["scenario"] == self.scenario.capitalize()]
-        df = df[df["core_metric_case"] == CASES[self.case]]
-        df = df[df["crpyears"] == str(self.lifetime)]
-        df.reset_index(drop=True, inplace=True)
-        return df
+    def opex(self):
+        """Return opex for given tech and year."""
+        df = self.data
+        df = df[df["core_metric_parameter"] == "Fixed O&M"]
+        opex = df["value"].iloc[0]
+        return opex
 
     @classmethod
     @property
@@ -118,20 +145,6 @@ class ATB:
         """Return lookup of technology - ATB names."""
         return TECHNOLOGIES
 
-    @property
-    def capex(self):
-        """Return capex for given tech and year."""
-        df = self.data
-        df = df[df["core_metric_parameter"] == "CAPEX"]
-        capex = df["value"].iloc[0]
-        return capex
-
-    @property
-    def opex(self):
-        """Return opex for given tech and year."""
-
-
-
 
 if __name__ == "__main__":
-    self = ATB(tech="pv_utility", atb_year=2022, cost_year=2030)
+    self = ATB(tech="wind_onshore_utility", atb_year=2022, cost_year=2030)

@@ -12,7 +12,7 @@ TODO:
 
     - Datetime stamps
 
-    - This was made in a rush before i was fast enough to build properly. Also,
+    - This was made in a rush before I was fast enough to build properly. Also,
        This is probably the most frequently used revrun cli, so this should
        definitely be a top candidate for a major refactor.
 """
@@ -234,19 +234,39 @@ class RRLogs(No_Pipeline):
             raise ValueError(Fore.RED + msg + Style.RESET_ALL)
         return path
 
-    def find_files(self, folder, file="config_pipeline.json"):
-        """Walk the dirpath directories and find all file paths."""
+    def find_files(self, folder, file="config_pipeline.json", pattern=None):
+        """Walk the dirpath directories and find all file paths.
+        
+        Parameters
+        ----------
+        folder : str
+            Path to root directory in which to search for files.
+        file : str
+            Name of a target files.
+        pattern : str
+            Pattern contained in target files.
+
+        Returns
+        -------
+        list : list of file paths.
+        """
         paths = []
         for root, dirs, files in os.walk(folder, topdown=False):
             for name in files:
-                if name == file:
-                    paths.append(os.path.join(root, file))
+                if pattern:
+                    if pattern in name:
+                        paths.append(os.path.join(root, file))
+                else:
+                    if name == file:
+                        paths.append(os.path.join(root, file))
             for name in dirs:
-                if name == file:
-                    paths.append(os.path.join(root, file))
-        if not paths:
-            msg = "No {} files found.".format(file)
-            raise ValueError(Fore.RED + msg + Style.RESET_ALL)
+                if pattern:
+                    if pattern in name:
+                        paths.append(os.path.join(root, file))
+                else:
+                    if name == file:
+                        paths.append(os.path.join(root, file))
+
         return paths
 
     def find_logs(self, folder):  # <---------------------------------------------------- Speed this up or use find_files
@@ -254,9 +274,7 @@ class RRLogs(No_Pipeline):
         # If there is a log directory directly in this folder use that
         contents = glob(os.path.join(folder, "*"))
         possibles = [c for c in contents if "log" in c]
-        if len(possibles) == 0:
-            msg = f"No log files found in {folder}."
-            raise OSError(Fore.RED + msg + Style.RESET_ALL)
+
         if len(possibles) == 1:
             logdir = os.path.join(folder, possibles[0])
             return logdir
@@ -347,8 +365,6 @@ class RRLogs(No_Pipeline):
 
     def find_runtime(self, job):
         """Find the runtime for a specific job (dictionary entry)."""
-        import datetime as dt
-
         if "fout" not in job:
             return "NA"
 
@@ -395,6 +411,7 @@ class RRLogs(No_Pipeline):
             minutes = round((etime - stime).seconds / 60, 3)
         else:
             minutes = "NA"
+
         return minutes
 
     def find_runtimes(self, status):
@@ -426,16 +443,20 @@ class RRLogs(No_Pipeline):
             
         # Return the dictionary
         with open(file, "r") as f:
-            status = json.load(f)
+            try:
+                status = json.load(f)
+            except json.decoder.JSONDecodeError:
+                status = "Updating"
 
         # Fix artifacts
-        status = self.fix_status(status)
+        if isinstance(status, dict):
+            status = self.fix_status(status)
 
-        # Fill in missing runtimes
-        try:
-            status = self.find_runtimes(status)
-        except IndexError:
-            pass
+            # Fill in missing runtimes
+            try:
+                status = self.find_runtimes(status)
+            except IndexError:
+                pass
 
         return file, status
 
@@ -522,8 +543,12 @@ class RRLogs(No_Pipeline):
         # Get the status dictionary
         _, status = self.find_status(sub_folder)
 
+        # If the status is actively being updated skip this
+        if status == "updating":
+            return status
+
         # There might be a log file with no status data frame
-        if status:
+        elif isinstance(status, dict):
             # If just one module
             if module:
                 df = self.module_status_dataframe(status, module)
@@ -554,8 +579,7 @@ class RRLogs(No_Pipeline):
             df["job_name"] = df.index
             df = df.reset_index(drop=True)
             df = df.reset_index()
-            df = self.check_index(df, sub_folder, )
-    
+            df = self.check_index(df, sub_folder)
             df = df[["index", "job_name", "job_status", "pipeline_index",
                      "job_id", "runtime", "date"]]
             df["runtime"] = df["runtime"].apply(safe_round, n=2)
@@ -575,8 +599,16 @@ class RRLogs(No_Pipeline):
         # Convert module status to data frame
         df = self.status_dataframe(sub_folder, module)
 
+        if isinstance(df, str) and df == "updating":
+            print(Fore.YELLOW + "\nStatus file updating for {sub_folder}"
+                  + Style.RESET_ALL)
+
+        elif df is None:
+            print(Fore.RED + "\nStatus file not found for {sub_folder}"
+                  + Style.RESET_ALL)
+
         # This might return None
-        if df is not None:
+        else:
             logdir = self.find_logs(sub_folder)
 
             # Now return the requested return type
@@ -602,9 +634,7 @@ class RRLogs(No_Pipeline):
                 if out:
                     pid = df["job_id"][df["index"] == int(out)].iloc[0]
                     self.checkout(logdir, pid, output="stdout")
-        else:
-            print(Fore.RED + "No status file found for " + sub_folder
-                  + Style.RESET_ALL)
+
         return sub_folder
 
     def main(self):
@@ -617,7 +647,7 @@ class RRLogs(No_Pipeline):
         module = self.module
         status = self.status
 
-        # If walk find all project directories with a ...?
+        # If walk find all project directories with a logs directory?
         if walk or error or out:
             folders = self.find_files(folder, file="logs")
             folders = [os.path.dirname(f) for f in folders]
@@ -630,6 +660,7 @@ class RRLogs(No_Pipeline):
             for sub_folder in folders:
                 args = (folder, sub_folder, module, status, error, out)
                 _ = self._run(args)
+
         else:
             args = (folder, folders[0], module, status, error, out)
             _ = self._run(args)
@@ -663,12 +694,12 @@ def main(folder, module, status, error, out, walk):
     rrlogs.main()
 
 
-# if __name__ == "__main__":
-#     folder = "/shared-projects/rev/projects/puerto_rico/fy23/pr100/rev/wind/forecasts"
-#     error = None
-#     out = None
-#     walk = True
-#     module = None
-#     status = "f"
-#     # self = NPipeline(folder)
-#     self = RRLogs(folder, module, status, error, out, walk)
+if __name__ == "__main__":
+    folder = "/shared-projects/rev/projects/hfto/fy23/rev/hydrogen/upv_baseline_reference"
+    error = None
+    out = None
+    walk = True
+    module = None
+    status = None
+    # self = NPipeline(folder)
+    self = RRLogs(folder, module, status, error, out, walk)

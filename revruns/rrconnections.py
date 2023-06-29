@@ -1,502 +1,346 @@
 # -*- coding: utf-8 -*-
 """Create a transmission connection table for an aggregation factor.
 
-To Do:
-    - Implement SLURM submission
-    - Catch missing line dependencies and add them to the table.
-    - Refactor into class methods
+TODO: 
+    - Upload template rasters to database.
 
 @author travis
 """
-import ast
-import click
-import copy
 import json
 import os
-import shutil
+import sys
+import time
 import warnings
 
+from functools import cached_property, lru_cache
+
 import geopandas as gpd
-import getpass
+import h5py
 import numpy as np
 import pandas as pd
-import pgpasslib
-import psycopg2 as pg
-import rasterio as rio
+import pathos.multiprocessing as mp
 
-from cached_property import cached_property
-from pathos import multiprocessing as mp
-from pyproj import Proj
-from rasterio.sample import sample_gen
-from reV.pipeline import Pipeline
-from revruns.constants import TEMPLATES
-from revruns import rr
-from rex.utilities.hpc import SLURM
-from scipy.spatial import cKDTree
+from multiprocessing import Manager
+from pandarallel import pandarallel as pdl
+from pathlib import Path
+from reV.supply_curve.extent import SupplyCurveExtent
+from shapely.ops import nearest_points
 from tqdm import tqdm
 
-warnings.filterwarnings("ignore", category=FutureWarning)
-pd.set_option('display.max_columns', 500)
-pd.set_option('display.width', 1000)
+from revruns.rrdb import TechPotential
+from tqdm import tqdm
+
+pdl.initialize(progress_bar=True, verbose=False)
 tqdm.pandas()
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-AEA_CRS = ("+proj=aea +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-96 +x_0=0 +y_0=0 "
-           "+ellps=GRS80 +datum=NAD83 +units=m +no_defs ")
-DISTANCE_BUFFER = 5000
-GEN_PATH = "/projects/rev/data/transmission/build/sample_gen_2013.h5"
-RES_PATH = "/datasets/WIND/conus/v1.0.0/wtk_conus_2013.h5"
-TM_DSET = "techmap_wtk"
-ALLCONNS_PATHS = {
-    "onshore": ("/projects/rev/data/transmission/shapefiles/"
-                "conus_allconns.gpkg"),
-    "offshore": ("/projects/rev/data/transmission/shapefiles/"
-                 "conus_allconns_offshore.gpkg")
-}
-MULTIPLIER_PATHS = {
-    "conus": ("/projects/rev/data/transmission/transmults/"
-              "conus_trans_multipliers.csv")
-}
-EXCL_PATHS = {
-    "onshore": {
-        "conus": "/projects/rev/data/exclusions/ATB_Exclusions.h5",
-        "canada": "/projects/rev/data/exclusions/Canada_Exclusions.h5",
-        "mexico": "/projects/rev/data/exclusions/Mexico_Exclusions.h5",
+BOUNDARIES = ("/lustre/eaglefs/projects/rev/transmission/data/"
+              "ne_10m_admin_0_countries.shp")
+DISTANCE_BUFFER = 5_000
+HOME = "/projects/rev/transmission/"
+INPUTS = {
+    "conus": {
+        "name": "United States of America",
+        "feature": "rev_conus_trans_lines",
+        "excl_fpath": "/projects/rev/data/exclusions/CONUS_Exclusions.h5",
+        "crs": "esri:102003"
     },
-    "offshore": {
-        "conus": "/projects/rev/data/exclusions/Offshore_Exclusions.h5"
-        }
+    "canada": {
+        "name": "Canada",
+        "feature": "rev_can_trans_lines",
+        "excl_fpath": "/projects/rev/data/exclusions/Canada_Exclusions.h5",
+        "crs": "esri:102001"
+    },
+    "mexico": {
+        "name": "Mexico",
+        "feature": "rev_mex_trans_lines",
+        "excl_fpath": "/projects/rev/data/exclusions/Mexico_Exclusions.h5",
+        "crs": ("+proj=aea +lat_1=14.5 +lat_2=32.5 +lat_0=24 +lon_0=-105 "
+                "+x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs ")  # SR-ORG:28
+    },
+    "india": {
+        "name": "India",
+        "feature": "rev_india_trans_lines_3",
+        "excl_fpath": "/projects/rev/data/exclusions/India_Exclusions.h5",
+        "crs": "epsg:7755"
+    }
 }
 
-# Help printouts
-ALLOC_HELP = ("The Eagle account/allocation to use to generate the supply "
-              "curve points used in the connection table. (str)")
-DIR_HELP = ("Destination directory. For consistency the output files will be "
-            "named according to their aggregation factor. Defaults to "
-            "the current directory. (str)")
-COUNTRY_HELP = ("County for which to create connections table. Only 'CONUS' "
-                "and 'Canada' are available so far.")
 
-JA_HELP = ("Run the aggregation table and quit. This is here because I "
-           "haven't worked out how to submit the connection half of this "
-           "process through SLURM after the reV supply curve is completed. "
-           "(boolean)")
-MEM_HELP = ("The amount of memory in GB needed to generate the supply "
-            "curve points used in the connection table. If the default "
-            "doesn't work try 179. Defaults to 90 GB. (int)")
-OFF_HELP = ("Run for offshore. Defaults to false and onshore. (boolean)")
-RES_HELP = ("The resolution factor (or aggregation factor) to use to build "
-            "the supply curve points. (int)")
-SIMPLE_HELP = ("Use the simple minimum distance connection criteria for each "
-               "connection. (boolean)")
-TIME_HELP = ("The amount of time in hours needed to generate the supply "
-             "curve points used in the connection table. Defaults to 1. (int)")
+def get_profile(country):
+    """Retrieve the georeferencing profile from an exclusion file."""
+    with h5py.File(INPUTS[country]["excl_fpath"]) as ds:
+        profile = json.loads(ds.attrs["profile"])
+    return profile
 
 
-def multipliers(point_path, dst, country="conus"):
-    """Use the connection data frame to create the regional multipliers.
+class Transmission:
+    """Methods for connecting supply curve points to transmission."""
 
-    Parameters
-    ----------
-    point_path : str
-        Path to input supply curve point file.
-    dst : str
-        Path to output multiplier file.
-    country : str
-        String representation for the country the point path represents. So far
-        only 'conus' is available.
-
-    Returns
-    -------
-    None
-    """
-    # Get supply curve points and multipliers
-    pnts = pd.read_csv(point_path)
-    mult_lkup = pd.read_csv(MULTIPLIER_PATHS[country])
-
-    # Get the projected coordinates of the points to match the reeds geotiff
-    with rio.open('/projects/rev/data/conus/reeds_regions.tif') as fin:
-        proj = Proj(fin.crs.to_proj4())
-    eastings, northings = proj(pnts.longitude.values, pnts.latitude.values)
-    pnts['eastings'] = eastings
-    pnts['northings'] = northings
-
-    # Get the reeds regions associated with each point
-    with rio.open('/projects/rev/data/conus/reeds_regions.tif') as fin:
-        generator = sample_gen(fin, pnts[['eastings', 'northings']].values)
-        results = [x[0] for x in generator]
-    pnts['reeds_demand_region'] = results
-    pnts_mults = pd.merge(pnts,
-                          mult_lkup,
-                          on='reeds_demand_region',
-                          how='left')
-
-    # Make sure the multiplier dimensions match the points
-    try:
-        assert pnts_mults.shape[0] == pnts.shape[0]
-    except AssertionError:
-        raise("Supply curve and multiplier point dimensions do not match.")
-
-    # Find points with no multipliers and assign nearest neighbors
-    misses = pnts_mults[pd.isnull(pnts_mults.trans_multiplier)]
-    hits = pnts_mults[~pd.isnull(pnts_mults.trans_multiplier)]
-    hits_tree = cKDTree(hits[['eastings', 'northings']].values)
-    dist, idx = hits_tree.query(misses[['eastings', 'northings']].values)
-    nearests = hits.iloc[idx].trans_multiplier.values
-    pnts_mults.loc[misses.index.values, 'trans_multiplier'] = nearests
-    try:
-        n_missing = len(pnts_mults[pd.isnull(pnts_mults.trans_multiplier)])
-        assert n_missing == 0
-    except AssertionError:
-        raise("Nearest neighbor search for missing mutlipliers failed.")
-
-    # Save
-    cols = ['sc_point_gid', 'trans_multiplier']
-    df = pnts_mults[cols]
-    df.to_csv(dst)
-
-
-def slurm(resolution, allocation, time, memory, country, dstdir):
-    """Submit this job to slurm.
-
-    This isn't worked in yet. I have to make it so this won't submit itself.
-    """
-    # Build command
-    name = "transmission_{:03d}".format(resolution)
-    template = "rrconnections -r {} -a {} -t {} -m {} -c {} -d {}"
-    cmd = template.format(
-        resolution,
-        allocation,
-        time,
-        memory,
-        country,
-        dstdir
-    )
-
-    # Submit command to slurm - there redundancy because of aggregation step
-    slurm = SLURM()
-    slurm.sbatch(cmd=cmd, alloc=allocation, walltime=time, memory=memory,
-                 name=name, stdout_path='./stdout',
-                 keep_sh=False, conda_env="revruns", module=None,
-                 module_root=None)
-
-
-class Features:
-    """Methods for retrieving and storing transmission feature datasets."""
-
-    def __init__(self, country="conus"):
-        """Initialize Features object."""
+    def __init__(self, home=".", country="conus", resolution=128, sample=None,
+                 overwrite=False):
+        """Initialize Transmission object."""
         self.country = country
+        self.db = TechPotential(country="india", schema="transmission")
+        self.resolution = resolution
+        self.home = Path(home).expanduser().absolute()
+        self.overwrite = overwrite
+        self._preflight(sample)
 
     def __repr__(self):
         """Return representation string."""
-        cntry = self.country
-        msg = f"<Features instance: country={cntry}>"
-        return msg
+        attrs = []
+        excludes = ["points", "sc_points", "features"]
+        for key, attr in self.__dict__.items():
+            if "country" in key:
+                print(f"{key}, {attr}")
+            if not key.startswith("_") and key not in excludes:
+                attrs.append(f"{key}={attr}")
+        return f"<{self.__class__.__name__} object: {', '.join(attrs)}>"
 
-    @cached_property
-    def linedf(self):
-        """Get transmission feature file stored on the Postgres data base."""
-        # Build query
-        if self.country.lower() == "canada":
-            name = "rev_can_trans_lines"
-        elif self.country.lower() == "mexico":
-            name = "rev_mex_trans_lines"
-        else:
-            name = "rev_conus_trans_lines"
-        cmd = f"""select * from transmission.{name};"""
-
-        # Open a connection and retrieve dataset
-        with pg.connect(**self.con_args) as con:
-            df = gpd.GeoDataFrame.from_postgis(cmd, con, geom_col="geom",
-                                               crs=AEA_CRS)
-
-        # Reset geometry column to match other datasets
-        df["geometry"] = df["geom"]
-        df = df.set_geometry("geometry")
-        del df["geom"]
-        df["trans_line_gid"] = df["gid"]
-        df = df[df["geometry"].notna()]
-
-        return df
-
-    @property
-    def con_args(self):
-        """Return a database connection."""
-        # Setup Postgres Connection Paramters
-        user = getpass.getuser()
-        host = "gds_edit.nrel.gov"
-        dbname = "tech_potential"
-        port = 5432
-        password = pgpasslib.getpass(host, port, dbname, user)
-
-        # The user might need to set up their password
-        if not password:
-            msg = ("No password found for the PostGres database needed to "
-                   "retrieve the transmission lines dataset. Please install "
-                   "pgpasslib (pip) and add this line to ~/.pgpass: \n "
-                   "gds_edit.nrel.gov:5432:tech_potential:<user_name>:"
-                   "<password>")
-            raise LookupError(msg)
-
-        # Build kwargs
-        kwargs = {"user": user, "host": host, "dbname": dbname, "user": user,
-                 "password": password, "port": port}
-
-        return kwargs
-
-    @property
-    def get_reeds(self):
-        """Get ReEDS region table."""
-        # Retrieve dataset
-        cmd = """select * from boundary.conus_nrel_reeds_regions;"""
-        with pg.connect(**self.con_args) as con:
-            df = gpd.GeoDataFrame.from_postgis(cmd, con, crs=AEA_CRS,
-                                               geom_col="the_geom_102008")
-
-        # Clean up table
-        df = df[["pca_reg", "demreg", "the_geom_102008", "raster_val", "gid",
-                 "id_0", "country"]]
-        df = df.rename({"the_geom_102008": "goemetry"}, axis=1)
-
-        return df
-
-    @property
-    def table_list(self):
-        """Return a list of all available tables in the postgres connection."""
-        with pg.connect(**self.con_args) as con:
-            with con.cursor() as cursor:
-                cursor.execute("select relname from pg_class where "
-                               "relkind='r' and relname !~ '^(pg_|sql_)';")
-                tables = []
-                for lst in cursor.fetchall():
-                    print(lst)
-                    table = lst[0]
-                    tables.append(table)
-        return tables
-
-
-class Build_Points:
-    """Methods to build the supply curve points."""
-
-    def __init__(self, allocation, home_path=".", **kwargs):
-        """Initialize Build_Points object."""
-        self.home_path = os.path.expanduser(os.path.abspath(home_path))
-        self.allocation = allocation
-
-    def __repr__(self):
-        """Return representation string."""
-        home = self.home_path
-        alloc = self.allocation
-        msg = f"<Build_Points instance: home_path={home}, allocation={alloc}>"
-        return msg
-
-    def agg_factor(self, area_sqkm, resolution=90, verbose=False):
-        """Return the closest aggregation factor needed for a given area.
-
-        Parameters
-        ----------
-        area_sqkm : int | float
-            An area in square kilometers.
-        resolution : int
-            The x/y resolution of the grid being aggregated.
-        """
-        area_sqm = area_sqkm * 1_000_000
-        factor = np.sqrt(area_sqm) / resolution
-        factor = int(np.round(factor, 0))
-
-        # Now whats the resulting area after rounding
-        if verbose:
-            area = ((resolution * factor) ** 2) / 1_000_000
-            print(f"Closest agg factor:{factor} \nResulting area: {area} sqkm")
-        return factor
-
-    def aggregate(self, resolution, memory, time, country, offshore=False):
-        """Run aggregation with no exclusions to get full set of sc points."""
-        # Setup paths
-        name = self.name(resolution)
-        dst2 = self.home.join("agtables", name + "_agg.csv", mkdir=True)
-
-        # Make sure the resolution is an integer
-        resolution = int(resolution)
-
-        # We'll only need to do this once for each
-        if not os.path.exists(dst2):
-            dst1 = self.home.join("agtables", name, name + "_agg.csv",
-                                  mkdir=True)
-            pipeline_path = self.config(resolution, memory, time, country,
-                                        offshore)
-
-            # Call reV on this file  <----------------------------------------- I want this to stay running until its done so I can run this and the connections in sequence
-            Pipeline.run(pipeline_path, monitor=True, verbose=False)
-            shutil.move(dst1, dst2)
-            shutil.rmtree(self.home.join("agtables", name))
-
-        return dst2
-
-    def config(self, resolution, memory, time, country, offshore):
-        """Create a simple configuration setup for aggregation."""
-        ag_path = self._agg_config(resolution, memory, time, country, offshore)
-        pipeline_path = self._pipeline_config(ag_path)
-        return pipeline_path
-
-    @property
-    def home(self):
-        """Return a Data_Path about for the home directory."""
-        return rr.Data_Path(self.home_path)
-
-    def name(self, resolution):
-        """Return the name of the resolution run."""
-        resolution = int(resolution)
-        return "{}_{:03d}".format(self.home.base, resolution)
-
-    def _agg_config(self, resolution, memory, time, country, offshore):
-        # Create the aggregation config
-        config = copy.deepcopy(TEMPLATES["ag"])
-        name = self.name(resolution)
-        run_home = self.home.extend("agtables", mkdir=True)
-        logdir = run_home.join(name, "logs")
-        config_path = run_home.join(name, "config_aggregation.json")
-
-        # Remove uneeded elements
-        del config["data_layers"]
-        if "res_class_bins" in config:
-            del config["res_class_bins"]
-
-        # There is a big difference between on and offshore
-        if offshore:
-            shore = "offshore"
-            excl = {"dist_to_coast": {"exclude_values": [0]}}
-        else:
-            shore = "onshore"
-            excl = {"albers": {"include_values": [1]}}
-
-        # Fill in needed elements
-        config["cf_dset"] = "cf_mean"
-        config["directories"]["logging_directories"] = logdir
-        config["directories"]["output_directory"] = run_home.join(name)
-        config["execution_control"]["allocation"] = self.allocation
-        config["execution_control"]["memory"] = memory
-        config["execution_control"]["walltime"] = time
-        config["excl_dict"] = excl
-        config["excl_fpath"] = EXCL_PATHS[shore][country.lower()]
-        config["gen_fpath"] = GEN_PATH
-        config["lcoe_dset"] = "lcoe_fcr"
-        config["power_density"] = 3
-        config["res_class_dset"] = "ws_mean"
-        config["res_fpath"] = RES_PATH
-        config["resolution"] = resolution
-        config["tm_dset"] = TM_DSET
-
-        # Write config to file
-        with open(config_path, "w") as cfile:
-            cfile.write(json.dumps(config, indent=4))
-
-        return config_path
-
-    def _pipeline_config(self, ag_config_path):
-        # Create a pipeline config for just aggregation (need it to monitor)
-        run_home = self.home.extend("agtables", mkdir=True)
-        res = int(os.path.dirname(ag_config_path).split("_")[-1])
-        config_path = run_home.join(
-            self.name(res),
-            "config_pipeline.json",
-            mkdir=True
+    def add_coordinates(self, sc, points, sample=None):
+        """Add average supply curve area coordinates to point table."""
+        # Get column and row indices
+        sc_cols, sc_rows = np.meshgrid(
+            np.arange(sc.n_cols),
+            np.arange(sc.n_rows)
         )
+        rows = sc_rows.flatten()
+        cols = sc_cols.flatten()
 
-        config = copy.deepcopy(TEMPLATES["pi"])
-        config["pipeline"].append({"supply-curve-aggregation": ag_config_path})
-        with open(config_path, "w") as file:
-            file.write(json.dumps(config, indent=4))
+        # Reduce for sample
+        if sample is not None:
+            halfway = sc.points.shape[0] // 2
+            rows = rows[halfway: halfway + sample]
+            cols = cols[halfway: halfway + sample]
 
-        return config_path
+        # Calculate the coordinates for each point
+        latlons = self._get_coords(sc, rows, cols)
+        points.loc[:, "latitude"] = latlons[:, 0]
+        points.loc[:, "longitude"] = latlons[:, 1]
 
+        return points
 
-class Connections(Build_Points, Features):
-    """Methods for connection supply curve points to transmission features."""
+    def build_points(self, sample=None):
+        """"Build and save a new point data set."""
+        # Build initial point indices
+        sc = SupplyCurveExtent(
+            f_excl=INPUTS[self.country]["excl_fpath"],
+            resolution=self.resolution
+        )
+        points = sc.points
+        if sample is not None:
+            halfway = sc.points.shape[0] // 2
+            points = points.iloc[halfway: halfway + sample]
+        points["sc_point_gid"] = points.index
+        points = points.rename({"row_ind": "sc_row_ind",
+                                "col_ind": "sc_col_ind"},
+                                axis=1)
 
-    def __init__(self, allocation, home_path=".", country="conus",
-                 offshore=False, simple=False):
-        """Initialize Connections object."""
-        super(Connections, self).__init__(allocation=allocation,
-                                          home_path=home_path)
-        self.country=country
-        self.offshore=offshore
-        self.simple=simple
+        # Chunk a list of sc_cols and rows
+        points = self.add_coordinates(sc, points, sample)
 
-    def __repr__(self):
-        """Return representation string."""
-        home = self.home_path
-        alloc = self.allocation
-        msg = f"<Connections instance: home_path={home}, allocation={alloc}>"
-        return msg
+        # Convert to target geodataframe
+        profile = get_profile(self.country)
+        points = points.rr.to_geo()
+        points = self.clip_land(points, profile)
 
-    def single_dist(self, row, simple=False):
+        # Save
+        self.point_fpath.parent.mkdir(parents=True, exist_ok=True)
+        points.to_file(self.point_fpath, driver="GPKG")
+
+        return points
+
+    def clip_land(self, points, profile):
+        """Clip out land, subset for CONUS if needed."""
+        # Get country geometry
+        df = gpd.read_file(BOUNDARIES)
+        df = df[["NAME", "geometry"]]
+        df = df[df["NAME"] == INPUTS[self.country]["name"]]
+
+        # If CONUS
+        if self.country == "conus":
+            # Just keep the biggest polygon
+            geoms = df["geometry"].iloc[0]
+            areas = np.array([g.area for g in geoms])
+            idx = np.where(areas == max(areas))[0][0]
+            df["geometry"] = geoms[idx]
+
+        # Reproject to local
+        df = df.to_crs(INPUTS[self.country]["crs"])
+        ppoints = points.to_crs(INPUTS[self.country]["crs"])
+
+        # Clip points file
+        buffer = (profile["transform"][0] * self.resolution) / 2
+        points["geometry"] = points["geometry"].buffer(buffer).envelope
+        ppoints = ppoints[points["latitude"] != np.inf]
+        opoints = gpd.overlay(ppoints, df, how="intersection")        
+
+        # Reset geometry
+        del points["geometry"]
+        points = pd.DataFrame(points)
+        points = points.rr.to_geo()
+
+        return points
+
+    def distance(self, row):
         """Find the closest point on the closest line to the target point."""
-        # Grab the supply curve point
+        # Grab the supply curve point and features
         point = row["geometry"]
+        features = self.features
 
         # Find the distance of the closest PCA load center and add 5km
-        pcadf = self.linedf[self.linedf["category"] == "PCALoadCen"]
-        pcadists = [point.distance(line) for line in pcadf["geometry"]]
-        pcadist = min(pcadists) + DISTANCE_BUFFER
-
-        # We are only searching for transmission features within this radius
+        pcadist = self.search_distance(point)
         buffer = row["geometry"].buffer(pcadist)
-        finaldf = self.linedf[self.linedf.intersects(buffer)]
+        close_features = features[features.intersects(buffer)]
+
+        # Only search for features within the PCA radius
         dist_m = []
-        for line in finaldf["geometry"]:
-            dist_m.append(point.distance(line))
-        finaldf["dist_m"] = dist_m
+        dependencies = []
+        for i, frow in close_features.iterrows():
+            line = frow["geometry"]
+            dist = point.distance(line)
+            dist_m.append(dist)
 
-        # If simple, we only need the closest transmission structure
-        if simple:
-            dmin = finaldf["dist_m"].min()
-            idx = np.where(finaldf["dist_m"] == dmin)[0][0]
-            finaldf = finaldf.iloc[idx]
+            # If it's a substation, we need those lines
+            if frow["category"] == "Substation":
+                deps = frow["trans_gids"]
+                for dep in deps:
+                    if dep not in close_features["trans_gid"].values:
+                        dependencies.append(dep)
 
-        # Convert to miles
-        finaldf["dist_mi"] = finaldf["dist_m"] / 1_609.34
-        del finaldf["dist_m"]
+        # Assign distances and convert to miles
+        close_features["dist_mi"] = np.array(dist_m) / 1_609.34
+
+        # Add in substation dependencies with large artifial distance
+        missing = features[features["trans_gid"].isin(dependencies)]
+        missing["dist_mi"] = 999_999
+        if missing.shape[0] > 0:
+            close_features = pd.concat([close_features, missing])
 
         # Attach the supply curve point identifiers
-        finaldf["sc_point_gid"] = row["sc_point_gid"]
-        finaldf["sc_point_row_id"] = row["sc_row_ind"]
-        finaldf["sc_point_col_id"] = row["sc_col_ind"]
+        close_features["sc_point_gid"] = row["sc_point_gid"]
+        close_features["sc_point_row_id"] = row["sc_row_ind"]
+        close_features["sc_point_col_id"] = row["sc_col_ind"]
 
-        return finaldf
+        return close_features
 
-    def par_dist(self, args):
-        """Find the closest point on the closest line to the target points."""
-        # Unpack arguments
-        idx, point_path, simple = args
+    def distance_parallel(self, points):
+        """Apply the distance function to ncpu chunks of point dataframe."""
+        # Split points data frame into chunks
+        out = []
+        ncpu = mp.cpu_count()
+        chunks = np.array_split(points, ncpu)
+        with mp.Pool(ncpu) as pool:
+            for c in tqdm(pool.imap(self._distance_chunk, chunks), total=ncpu):
+                out.append(c)
 
-        # Get the supply curve points and select the indices of this chunk
-        scdf = pd.read_csv(point_path, low_memory=False)  #  <----------------- Use chunksize to split these up instead of reading entire frame
-        scdf = scdf.loc[idx]
-        crs = self.linedf.crs.to_wkt()
-        scdf = scdf.rr.to_geo()
-        scdf = scdf.to_crs(crs)
+        connections = pd.concat(out)
+        drops = ["geometry", "bgid", "egid", "voltage"]
+        for drop in drops:
+            if drop in connections:
+                del connections[drop]
 
-        # Apply the distance function to each row and reshape into data frame
-        condf = scdf.progress_apply(self.single_dist, simple=simple, axis=1)
-        if not simple:
-            # This is a dataframe of dataframes
-            condfs = [condf.iloc[i] for i in range(condf.shape[0])]
-            condf = pd.concat(condfs)
-        condf["trans_gids"] = condf["trans_gids"].apply(lambda x: json.dumps(x))
+        return connections
 
-        return condf
+    def set_features(self):
+        """Retrieve transmission feature."""
+        table = INPUTS[self.country]["feature"]
+        features = self.db.get(table=table)
+        features = features.rename({"gid": "trans_gid"}, axis=1)
+        features = features.to_crs(INPUTS[self.country]["crs"])
+        features["trans_gids"] = features["trans_gids"].apply(json.loads)
+        self.features = features
 
-    def fix_missing_dependencies(self, condf, linedf, scdf, simple=False):
-        """Check for and find fix missing feature line dependencies.
+    @cached_property
+    def sc_points(self):
+        """Retrieve a supply curve point geodataframe."""
+        df = gpd.read_file(self.point_fpath)
+        df = df.to_crs(INPUTS[self.country]["crs"])
+        return df
+
+    def search_distance(self, point):
+        """Find the distance of the closest PCA load center and add 5km."""
+        pca_df = self.features[self.features["category"] == "PCALoadCen"]
+        dists = [point.distance(line) for line in pca_df["geometry"]]
+        dist = min(dists) + DISTANCE_BUFFER
+        return dist
+
+    def _distance_chunk(self, chunk):
+        """Apply self.distance to a chunk of a points dataframe."""
+        df = chunk.apply(self.distance, axis=1)
+        df = pd.concat(df.to_list())
+        return df
+
+    def _get_coords(self, sc, rows, cols):
+        """Build coordinates for the supply curve table."""
+        lats = []
+        lons = []
+        rowcols = zip(rows, cols)
+        for r, c in tqdm(rowcols, total=rows.shape[0]):
+            r = sc.excl_row_slices[r]
+            c = sc.excl_col_slices[c]
+            lats.append(sc.exclusions["latitude", r, c].mean())
+            lons.append(sc.exclusions["longitude", r, c].mean())
+        return np.array([lats, lons]).T
+
+    def _find_missing_lines(self, connections):
+        """Find missing lines for substations in connection table.
 
         Parameters
         ----------
-        condf: pd.core.frame.DataFrame
+        connections : pd.core.fram.DataFrame
+            A connections table output containing initial sc point to feature
+            connections.
+
+        Returns
+        -------
+        list : A list of dictionaries with sc_point_gid's as keys and a list of 
+               trans_gid's as values. 
+        """
+        # Defining this here because of laziness
+        def _find_missing(row):
+            # Find missing line dependencies for a single entry
+            sc_gid = row["sc_point_gid"]
+            point_conns = connections[connections["sc_point_gid"] == sc_gid]
+            line_gids = row["trans_gids"]
+            lines = []
+            for line_gid in line_gids:
+                if line_gid not in point_conns["trans_gid"].values:
+                    lines.append(line_gid)
+            missing = {sc_gid: lines}
+            return missing
+
+        # Subset for unique substations
+        substations = connections[connections["category"] == "Substation"]
+
+        # If a point connects to substation, it must also connect to its lines
+        values = substations.parallel_apply(_find_missing, axis=1).values
+        values = [m for m in values if len(list(m.values())[0]) > 0]
+        missing = {}
+        for entry in values:
+            key = list(entry.keys())[0]
+            lines = entry[key]
+            if key in missing:
+                for line in lines:
+                    if line not in missing[key]:
+                        missing[key].append(line)
+            else:
+                missing[key] = lines
+
+        # Set as an attribute for later
+        self.missing = missing
+
+        return missing
+
+    def _fix_missing_lines(self, connections):
+        """Check for and find fix missing substation line dependencies.
+
+        Parameters
+        ----------
+        connections: pd.core.frame.DataFrame
             Data frame of supply curve point to transmission line connections.
-        linedf:  pd.core.frame.DataFrame
-            Data frame of transmission line features.
 
         Returns
         -------
@@ -504,181 +348,115 @@ class Connections(Build_Points, Features):
             The same data frame with added entries if missing line
             dependencies were found.
         """
-        # This requires an extra function
-        def find_point(row, scdf):
-            """Find the closest supply curve point to a line."""
-            # Find all distances to this line
-            line = row["geometry"]
-            scdists = [point.distance(line) for point in scdf["geometry"]]
+        # Get lines
+        missing = self.missing
+        features = self.features()
 
-            # Find the closest point from the distances
-            dist_m = np.min(scdists)
-            point_idx = np.where(scdists == dist_m)[0][0]
-            point_row = scdf.iloc[point_idx]
-
-            # These have different field names
-            fields = {
-                "sc_point_gid": "sc_point_gid",
-                "sc_row_ind": "sc_point_row_id",
-                "sc_col_ind": "sc_point_col_id"
-            }
-
-            # We need that points identifiers
-            for key, field in fields.items():
-                row[field] = point_row[key]
-
-            # Finally add in distance in miles
-            row["dist_mi"] = dist_m / 1609.34
-
-            # We only need these fields
-            keepers = ['ac_cap', 'cap_left', 'category', 'trans_gids',
-                       'trans_line_gid', 'dist_mi', 'sc_point_gid',
-                       'sc_point_row_id', 'sc_point_col_id']
-            row = row[keepers]
-
-            return row
-
-        # Get missings dependencies - catching error
-        if not self.simple:
-            from reV.handlers.transmission import TransmissionFeatures
-
-            features = TransmissionFeatures(condf)
-            if "_check_feature_dependencies" in features.__dict__:
-                check = features._check_feature_dependencies
-            else:
-                check = features.check_feature_dependencies
-
-            missing_dependencies = []
-            try:
-                check()
-            except RuntimeError as e:
-                error = str(e)
-                missing_str = error[error.index("dependencies:") + 14:]
-                missing_dict = ast.literal_eval(missing_str)
-                for gids in missing_dict.values():
-                    for gid in gids:
-                        missing_dependencies.append(gid)
-
-            # Find those features and reformat
-            mdf = linedf[linedf["gid"].isin(missing_dependencies)]
+        # for each Find those features and reformat
+        new_rows = []
+        for sc_gid, trans_gids in missing.items():
+            row = connections[connections["sc_point_gid"] == sc_gid].iloc[0]
+            lines = features[features["trans_gid"].isin(trans_gids)]
+            for i, line in lines.iterrows():
+                new_rows.append({
+                    "ac_cap": line["ac_cap"],
+                    "cap_left": line["cap_left"],
+                    "category": line["category"],
+                    "trans_gid": line["trans_gid"],
+                    "dist_mi": 9_999_990,
+                    "sc_point_gid": row["sc_point_gid"],
+                    "sc_point_row_id": row["sc_point_row_id"],
+                    "sc_point_col_id": row["sc_point_col_id"]
+                })
+            mdf = pd.DataFrame(new_rows)
             mdf = mdf.replace("null", np.nan)
-            mdf = mdf.apply(find_point, scdf=scdf, axis=1)
 
-            # Append these to the table
-            condf = pd.concat([condf, mdf])
+        # Append these to the table
+        connections = pd.concat([connections, mdf])
 
-        return condf
+        return connections
 
-    def connections(self, point_path, dst, simple=False, offshore=False):
-        """Find distances to nearby transmission features.
+    def _preflight(self, sample=None):
+        """Initialize more attributes."""
+        # Get profile from h5 file
+        self.profile = get_profile(self.country)
+        self.crs = self.profile["crs"]
 
-        Parameters
-        ----------
-        point_path : str
-            Path to input supply curve point file.
-        dst : str
-            Path to output transmission feature file.
-        simple : logical
-            Use simple connection method.
-        offshore : logical
-            Create connections for offshore points.
+        # Build supply curve points if needed
+        if sample is not None:
+            fname = f"build_{self.resolution:03d}_sample_agg.gpkg"
+        else:
+            fname = f"build_{self.resolution:03d}_agg.gpkg"
 
-        Returns
-        -------
-        None
-        """
-        if not os.path.exists(dst):
-            # Get the supply curve points
-            print(f"building {dst}...")
-            scdf = pd.read_csv(point_path)
-            crs = self.linedf.crs.to_wkt()
-            scdf = scdf.rr.to_geo()
-            scdf = scdf.to_crs(crs)
+        rpath = f"{self.country}/agtables/{fname}"
+        self.point_fpath = self.home.joinpath(rpath)
+        
+        if sample is not None:
+            if self.point_fpath.exists():
+                os.remove(self.point_fpath)
 
-            # Split into chunks and build args for connection function
-            ncpu = mp.cpu_count()
-            chunks = np.array_split(scdf.index, ncpu)
-            arg_list = [(list(idx), point_path, simple) for idx in chunks]
+        if not self.point_fpath.exists():
+            self.build_points(sample=sample)
 
-            # Run the connection functions on each chunk
-            condfs = []
-            with mp.Pool(ncpu) as pool:
-                for condf in pool.imap(self.par_dist, arg_list):
-                    condfs.append(condf)
-            condf = pd.concat(condfs)
+        # Let's try setting the features as an attribute to avoid mp caching
+        self.set_features()
 
-            # It's too big
-            condf = condf.drop(["geometry", "bgid", "egid", "gid", "voltage"],
-                               axis=1)
+    def main(self):
+        """Build a connection table for a given country and resolution"""
+        # Build destination path
+        fname = f"connections_{self.resolution:03d}.csv"
+        dst = self.home.joinpath(f"{self.country}/{fname}")
 
-            # There might be missing dependencies
-            condf = self.fix_missing_dependencies(condf, scdf, simple)
+        # Check if it exists and needs to be overwritten
+        if dst.exists() and self.overwrite:
+            os.remove(dst)
+        if dst.exists():
+            print(f"{dst} exists, skipping. Use overwrite option to rebuild.")
 
-            # Save to file
-            print("Saving connections table to " + dst)
-            condf.to_csv(dst, index=False)
+        # Build the table
+        else:
+            # Get the supply curve point geodataframe
+            start = time.time()
+            points = self.sc_points
 
+            # Apply the distance function to each row
+            connections = self.distance_parallel(points)
+ 
+            # Add missing substation dependencies
+            n_missing = len(self._find_missing_lines(connections))
+            print(f"\n{(n_missing)} substations with missing lines")
+            # if n_missing > 0:
+                # print(f"\n{(n_missing)} substations with missing lines, "
+                #       "fixing...")
+            #     connections = self._fix_missing_lines(connections)
 
-@click.command()
-@click.option("--resolution", "-r", required=True, help=RES_HELP)
-@click.option("--allocation", "-a", required=True, help=ALLOC_HELP)
-@click.option("--country", "-c", default="CONUS", help=COUNTRY_HELP)
-@click.option("--home", "-d", default=".", help=DIR_HELP)
-@click.option("--memory", "-m", default=90, help=MEM_HELP)
-@click.option("--time", "-t", default=1, help=TIME_HELP)
-@click.option("--offshore", "-o", is_flag=True, default=False, help=OFF_HELP)
-@click.option("--simple", "-s", is_flag=True, help=SIMPLE_HELP)
-@click.option("--just_agg", "-ja", is_flag=True, help=JA_HELP)
-def main(resolution, allocation, country, home, memory, time, offshore,
-         simple, just_agg):
-    """RRCONNECTIONS.
+            # Write to file
+            connections.to_csv(dst, index=False)
 
-    Create a table with transmission feature connections and distance for a
-    given supply curve aggregation factor.
-
-    Exclusion file input and SLURM submission not implemented yet.
-    """
-    home = os.path.abspath(os.path.expanduser(home))
-    country = country.lower()
-
-    # Build the point file and retrieve the file path
-    builder = Connections(allocation, home, simple=simple)
-    point_path = builder.aggregate(resolution, memory, time, country, offshore)
-
-    if not just_agg:
-        # Create the target path
-        resolution = int(resolution)
-        trans_name = "connections_{:03d}.csv".format(resolution)
-        dst = os.path.join(home, trans_name)
-
-        # And run transmission connections
-        builder.connections(point_path, dst, simple, offshore)
-
-        # And lastly, the multipliers table
-        if country == "conus":
-            mult_file = "multipliers_{:03d}.csv".format(resolution)
-            mult_path = os.path.join(home, mult_file)
-            multipliers(point_path, mult_path)
-
-    else:
-        print("A full supply curve point table has been saved to "
-              f"{point_path}")
-        print("You may now check out a node to generate a "
-              + str(resolution)
-              + " resolution connections table.")
+        # Done.
+        end = time.time()
+        seconds = round(end - start, 3)
+        print(f"\nDone: {seconds} seconds.")
 
 
 if __name__ == "__main__":
-    allocation = "wetosa"
-    country = "canada"
-    home = f"/projects/rev/data/transmission/build/{country}"
-    resolution = 128
-    allocation = "wetosa"
-    memory = 90
-    time = 1
-    simple = False
-    offshore = False
-    just_agg = False
-    exclusions = EXCL_PATHS["onshore"][country]
-    self = Connections(allocation, home, country=country)
-    main()
+    # Pull out user argument for country and resolution
+    if len(sys.argv) == 2:
+        country = sys.argv[1]
+    else:
+        country = "india"
+
+    if len(sys.argv) == 3:
+        resolution = sys.argv[2]
+    else:
+        resolution = 64
+
+    # Build the table
+    builder = self = Transmission(
+        country=country,
+        home=HOME,
+        resolution=resolution,
+        sample=100,
+        overwrite=False
+    )
+    # builder.main()
