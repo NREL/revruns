@@ -283,11 +283,14 @@ COLLECT_TEMPLATE = {
         "cf_mean",
         "cf_profile",
         "lcoe_fcr",
-        "ghi_mean"
+        "fixed_operating_cost",
+        "system_capacity",
+        "fixed_charge_rate",
+        "variable_operating_cost",
     ],
-    "file_prefixes": "PIPELINE",
+    "collect_pattern": "PIPELINE",
     "log_level": "INFO",
-    "project_points": "PLACEHOLDER"
+    "project_points": None
 }
 
 ECON_TEMPLATE = {
@@ -336,10 +339,21 @@ MULTIYEAR_TEMPLATE = {
   },
   "groups": {
     "none": {
-      "dsets": "PLACEHOLDER",
+      "dsets": [
+        "cf_profile",
+        "cf_mean",
+        "lcoe_fcr"
+      ],
       "source_dir": "./",
       "source_files": "PIPELINE",
-      "source_prefix": ""
+      "source_prefix": "",
+      "pass_through_dsets": [
+        "fixed_operating_cost",
+        "system_capacity",
+        "system_capacity_ac",
+        "fixed_charge_rate",
+        "variable_operating_cost",
+      ]
     }
   },
   "log_level": "INFO"
@@ -375,11 +389,19 @@ AGGREGATION_TEMPLATE = {
   "gen_fpath": "PIPELINE",
   "lcoe_dset": "PIPELINE",
   "power_density": "PLACEHOLDER",
-  "res_class_bins": "PLACEHOLDER",
+  "res_class_bins": None,
   "res_class_dset": "PLACEHOLDER",
   "res_fpath": "PLACHOLDER",
   "resolution": "PLACEHOLDER",
-  "tm_dset": "PLACHOLDER"
+  "tm_dset": "PLACHOLDER",
+  "h5_dsets": [
+        "cf_mean-means",
+        "fixed_charge_rate",
+        "capital_cost",
+        "fixed_operating_cost",
+        "variable_operating_cost",
+        "system_capacity"
+    ]
 }
 
 SUPPLY_CURVE_TEMPLATE_OLD = {
@@ -420,6 +442,7 @@ SUPPLY_CURVE_TEMPLATE_LC = {
     "fixed_charge_rate": "PLACEHOLDER",
     "sc_points": "PIPELINE",
     "simple": True,  # Must be true
+    "sc_capacity_col": "capacity",
     "trans_table": [
         "/shared-projects/rev/exclusions/least_cost_xmission/100MW_costs_128.csv",
         "/shared-projects/rev/exclusions/least_cost_xmission/200MW_costs_128.csv",

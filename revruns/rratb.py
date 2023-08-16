@@ -78,32 +78,83 @@ class ATB:
         msg = ", ".join(msgs)
         return f"<ATB object at {address}>: {msg}"
 
-    @property
-    def capex(self):
-        """Return capex for given tech and year."""
-        df = self.data
-        df = df[df["core_metric_parameter"] == "CAPEX"]
-        capex = df["value"].iloc[0]
-        return capex
+    def capex(self, res_class=None, tech=None):
+        """Return capex for given tech and year.
 
-    @property
-    def confin(self):
-        """Return construction financing factor for given tech and year."""
-        df = self.data
+        Parameters
+        ----------
+        res_class : int
+            Resource class number from 1 to 10. Defaults to class 1.
+        tech : int
+            Technology subclass selection number. New for wind in 2023 since
+            there are now several different turbines that are appropriate for
+            different resource classes. Ranges from 1 to 4.
+
+        Returns
+        -------
+        float : Value representing capital cost for the given year, technology,
+                resource class, scenario, and technology sub-class.
+        """
+        df = self.data.copy()
+        df = df[df["core_metric_parameter"] == "CAPEX"]
+        df = self._filter(df, res_class=res_class, tech=tech)
+        return df["value"]
+
+    def capex_overnight(self, res_class=None, tech=None):
+        """Return overnight capex for given tech and year.
+
+        Parameters
+        ----------
+        res_class : int
+            Resource class number from 1 to 10. Defaults to class 1.
+        tech : int
+            Technology subclass selection number. New for wind in 2023 since
+            there are now several different turbines that are appropriate for
+            different resource classes. Ranges from 1 to 4.
+
+        Returns
+        -------
+        float : Value representing capital cost for the given year, technology,
+                resource class, scenario, and technology sub-class.
+        """
+        df = self.data.copy()
+        df = df[df["core_metric_parameter"] == "OCC"]
+        df = self._filter(df, res_class=res_class, tech=tech)
+        return df["value"]
+
+    def confin(self, res_class=None, tech=None):
+        """Return construction financing factor for given tech and year.
+
+        Parameters
+        ----------
+        res_class : int
+            Resource class number from 1 to 10. Defaults to class 1.
+        tech : int
+            Technology subclass selection number. New for wind in 2023 since
+            there are now several different turbines that are appropriate for
+            different resource classes. Ranges from 1 to 4.
+
+        Returns
+        -------
+        float : Value representing construction finance factor for the given
+                year, technology, resource class, scenario, and technology
+                sub-class.
+        """
+        df = self.data.copy()
         param = "Interest During Construction  - Nominal"
         df = df[df["core_metric_parameter"] == param]
-        capex = df["value"].iloc[0]
-        return capex
+        df = self._filter(df, res_class=res_class, tech=tech)
+        return df["value"]
 
     @property
     def data(self):
         """Return the filtered dataset."""
-        df = self.full_data
+        df = self.full_data.copy()
         df = df[df["technology_alias"] == TECHNOLOGIES[self.tech]]
         df = df[df["core_metric_variable"] == self.cost_year]
         df = df[df["scenario"] == self.scenario.capitalize()]  # This filters out the construction financing
         df = df[df["core_metric_case"] == CASES[self.case]]
-        df = df[df["crpyears"] == str(self.lifetime)]
+        df = df[df["crpyears"].astype(str) == str(self.lifetime)]
         df.reset_index(drop=True, inplace=True)
         return df
 
@@ -131,13 +182,28 @@ class ATB:
             df = pd.read_csv(self.table_fpath, low_memory=False)
         return df
 
-    @property
-    def opex(self):
-        """Return opex for given tech and year."""
-        df = self.data
+    def opex(self, res_class=None, tech=None):
+        """Return opex for given tech and year.
+
+        Parameters
+        ----------
+        res_class : int
+            Resource class number from 1 to 10. Defaults to class 1.
+        tech : int
+            Technology subclass selection number. New for wind in 2023 since
+            there are now several different turbines that are appropriate for
+            different resource classes. Ranges from 1 to 4.
+
+        Returns
+        -------
+        float : Value representing annual operating costs for the given
+                year, technology, resource class, scenario, and technology
+                sub-class.
+        """
+        df = self.data.copy()
         df = df[df["core_metric_parameter"] == "Fixed O&M"]
-        opex = df["value"].iloc[0]
-        return opex
+        df = self._filter(df, res_class=res_class, tech=tech)
+        return df["value"]
 
     @classmethod
     @property
@@ -145,6 +211,15 @@ class ATB:
         """Return lookup of technology - ATB names."""
         return TECHNOLOGIES
 
+    def _filter(self, df, tech=None, res_class=None):
+        if not res_class and not tech:
+            df = df[df["techdetail"] == "Class1"].iloc[0]
+        if res_class:
+            df = df[df["techdetail"] == f"Class{res_class}"].iloc[0]
+        if tech:
+            df = df[df["techdetail2"].str.contains(f"{tech}")].iloc[0]
+        return df
+
 
 if __name__ == "__main__":
-    self = ATB(tech="wind_onshore_utility", atb_year=2022, cost_year=2030)
+    self = ATB(tech="wind_onshore_utility", atb_year=2023, cost_year=2030)

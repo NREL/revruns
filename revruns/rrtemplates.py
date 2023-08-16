@@ -109,14 +109,13 @@ PIPELINE_TEMPLATE =  {
 }
 
 
-def write_config(template, path, verbose=False):
+def write_config(config, path, verbose=False):
     """ Write a configuration dictionary to a json file."""
-    # Write json to file
     with open(path, "w") as file:
-        if isinstance(template, dict):
-            file.write(json.dumps(template, indent=4))
+        if isinstance(config, dict):
+            file.write(json.dumps(config, indent=4))
         else:
-            file.write(template)
+            file.write(config)
 
 
 @click.command()

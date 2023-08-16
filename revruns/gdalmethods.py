@@ -1003,8 +1003,29 @@ def translate(src, dst, overwrite=False, compress=None, creation_ops=None,
     del ds
 
 
+def warp_progress(percent, message, unknown):
+    """A progress callback that recreates the gdal printouts."""
+    # We don't need the message or unknown objects
+    del message, unknown
+
+    # Between numeric printouts we need three dots
+    dots = [[str(i) + d for d in ["2", "5", "8"]] for i in range(10)]
+    dots = [int(l) for sl in dots for l in sl]
+
+    # If divisible by ten, print the number
+    if percent % 10 == 0 and percent != 0:
+        print("{}".format(percent), end="")
+
+    # If one of three numbers between multiples of 10, print a dot
+    elif percent in dots:
+        print(".", end="")
+
+    return 1
+
+
 def warp(src, dst, dtype=None, template=None, overwrite=False,
-        creation_ops=None, **kwargs):
+         creation_ops=None, multithread=True, cache_max=None, progress=True,
+         **kwargs):
     """
     Warp a raster to a new geometry.
 
@@ -1028,6 +1049,12 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
         Overwrite dst file (optional).
     creation_ops : dict
         A dictionary of creation option keys and values (optional).
+    multithread : boolean
+        Use all cores minus one.       
+    cache_max : int
+        Maximum cache storage in MW. If not set, it uses the GDAL default.
+    progress : boolean
+        Display progress graphic. Defaults to True.
     **kwargs
         Any available key word arguments for gdalwarp. Available options
         and descriptions can be found using gdal_options("warp").
@@ -1035,33 +1062,7 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     Returns
     -------
     None.
-
-    Example:
-        warp(src="/Users/twillia2/Box/WETO 1.2/data/rasters/agcounty_product.tif",
-             dst="/Users/twillia2/Box/WETO 1.2/data/rasters/test.tif",
-             template="/Users/twillia2/Box/WETO 1.2/data/rasters/albers/acre/cost_codes_ac.tif",
-             dstSRS="epsg:102008")
     """
-    # Create progress callback - these behave differently by module
-    def warp_progress(percent, message, unknown):
-        """A progress callback that recreates the gdal printouts."""
-        # We don't need the message or unknown objects
-        del message, unknown
-
-        # Between numeric printouts we need three dots
-        dots = [[str(i) + d for d in ["2", "5", "8"]] for i in range(10)]
-        dots = [int(l) for sl in dots for l in sl]
-
-        # If divisible by ten, print the number
-        if percent % 10 == 0 and percent != 0:
-            print("{}".format(percent), end="")
-
-        # If one of three numbers between multiples of 10, print a dot
-        elif percent in dots:
-            print(".", end="")
-
-        return 1
-
     # Overwrite existing file
     if os.path.exists(dst):
         if overwrite:
@@ -1123,15 +1124,30 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     kwargs["srcSRS"] = srs
 
     # Use the progress callback
-    kwargs["callback"] = gdal.TermProgress_nocb
+    if progress:
+        kwargs["callback"] = gdal.TermProgress_nocb
 
-    # Other creation options
+    # Creation options
     if creation_ops:
         kwargs["creationOptions"] = []
         for key, value in creation_ops.items():
             kwargs["creationOptions"].append(f"{key}={value}")
 
-    # Check Options: https://gdal.org/python/osgeo.gdal-module.html#WarpOptions
+    # Initialize warp options
+    kwargs["warpOptions"] = []
+
+    # Multi-core warp options
+    if multithread:
+        kwargs["multithread"] = True
+        kwargs["warpOptions"].append("NUM_THREADS=ALL_CPUS")
+        gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
+
+    # Set maximum cache
+    kwargs["warpMemoryLimit"] = 512
+    if cache_max:
+        gdal.SetConfigOption(f"GDAL_CACHEMAX", f"{cache_max}")
+
+    # Check options: https://gdal.org/python/osgeo.gdal-module.html#WarpOptions
     ops = gdal_options("warp", **kwargs)
 
     # Call
@@ -1139,6 +1155,9 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     ds = gdal.Warp(dst, src, options=ops)
     del ds
 
+    # The stdout is struggling at the end of the process
+    if progress:
+        print("\n")
 
 class Map_Values:
     """Map a set of keys from an input raster (or rasters) to values in an

@@ -51,6 +51,7 @@ STATUS_HELP = ("Print jobs with a given status. Option include 'failed' "
                "(or 'r'), 'submitted' (or 'sb') and 'unsubmitted (or 'usb').")
 WALK_HELP = ("Walk the given directory structure and return the status of "
              "all jobs found.")
+SAVE_HELP = ("Write the outputs of an rrlogs call to a csv.")
 
 CONFIG_DICT = {
     "gen": "config_gen.json",
@@ -120,7 +121,7 @@ class RRLogs(No_Pipeline):
     """Methods for checking rev run statuses."""
 
     def __init__(self, folder=".", module=None, status=None, error=None,
-                 out=None, walk=False,):
+                 out=None, walk=False, csv=False):
         """Initialize an RRLogs object."""
         self.folder = os.path.expanduser(os.path.abspath(folder))
         self.module = module
@@ -128,6 +129,7 @@ class RRLogs(No_Pipeline):
         self.error = error
         self.out = out
         self.walk = walk
+        self.csv = csv
 
     def __repr__(self):
         """Return RRLogs object representation string."""
@@ -588,6 +590,20 @@ class RRLogs(No_Pipeline):
         else:
             return None
 
+    def to_csv(self, df):
+        """Save the outputs to a CSV."""
+        # This can be a single or list of data frames
+        if isinstance(df, list):
+            df = pd.concat(df)
+
+        # Make a destination path
+        date = dt.datetime.today()
+        stamp = dt.datetime.strftime(date, "%Y%m%d%H%M%S")
+        dst = os.path.join(self.folder, f"rrlogs_{stamp}.csv")
+
+        # Write file
+        df.to_csv(dst, index=False)
+
     def _run(self, args):
         """Print status and job pids for a single project directory."""
         # Unpack args
@@ -604,7 +620,7 @@ class RRLogs(No_Pipeline):
                   + Style.RESET_ALL)
 
         elif df is None:
-            print(Fore.RED + "\nStatus file not found for {sub_folder}"
+            print(Fore.RED + f"\nStatus file not found for {sub_folder}"
                   + Style.RESET_ALL)
 
         # This might return None
@@ -635,7 +651,7 @@ class RRLogs(No_Pipeline):
                     pid = df["job_id"][df["index"] == int(out)].iloc[0]
                     self.checkout(logdir, pid, output="stdout")
 
-        return sub_folder
+        return df
 
     def main(self):
         """Run the appropriate rrlogs functions for a folder."""
@@ -657,13 +673,17 @@ class RRLogs(No_Pipeline):
 
         # Run rrlogs for each
         if len(folders) > 1:
+            df = []
             for sub_folder in folders:
                 args = (folder, sub_folder, module, status, error, out)
-                _ = self._run(args)
-
+                df.append(self._run(args))
         else:
             args = (folder, folders[0], module, status, error, out)
-            _ = self._run(args)
+            df = self._run(args)
+
+        # Write to file
+        if self.csv:
+            self.to_csv(df)
 
 
 @click.command()
@@ -673,7 +693,8 @@ class RRLogs(No_Pipeline):
 @click.option("--error", "-e", default=None, help=ERROR_HELP)
 @click.option("--out", "-o", default=None, help=OUT_HELP)
 @click.option("--walk", "-w", is_flag=True, help=WALK_HELP)
-def main(folder, module, status, error, out, walk):
+@click.option("--csv", "-c", is_flag=True, help=SAVE_HELP)
+def main(folder, module, status, error, out, walk, csv):
     r"""REVRUNS - Check Logs.
 
     Check log files of a reV run directory. Assumes certain standard
@@ -690,16 +711,17 @@ def main(folder, module, status, error, out, walk):
     "rep-profiles": "config_rep-profiles.json" \n
     "qaqc": "config_qaqc.json" \n
     """
-    rrlogs = RRLogs(folder, module, status, error, out, walk)
+    rrlogs = RRLogs(folder, module, status, error, out, walk, csv)
     rrlogs.main()
 
 
 if __name__ == "__main__":
-    folder = "/shared-projects/rev/projects/hfto/fy23/rev/hydrogen/upv_baseline_reference"
+    folder = "/shared-projects/rev/projects/weto/fy23/atb/rev/standard_scenarios/corrections"
     error = None
     out = None
     walk = True
     module = None
     status = None
+    csv = True
     # self = NPipeline(folder)
-    self = RRLogs(folder, module, status, error, out, walk)
+    self = RRLogs(folder, module, status, error, out, walk, csv)

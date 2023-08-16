@@ -376,7 +376,7 @@ class Rasterizer:
 class Exclusions:
     """Build or add to an HDF5 Exclusions dataset."""
 
-    def __init__(self, excl_fpath, lookup={}):
+    def __init__(self, excl_fpath, attrs=None, lookup={}, parallel=True):
         """Initialize Exclusions object.
 
         Parameters
@@ -386,9 +386,13 @@ class Exclusions:
             lookup : str | dict
                 Dictionary or path dictionary of raster value, key pairs
                 derived from shapefiles containing string values (optional).
+            parallel : boolean
+                Run GDAL processing routine in parallel with N - 1 cores.
         """
         self.excl_fpath = excl_fpath
+        self.attrs = attrs
         self.lookup = lookup
+        self.parallel = parallel
         self._preflight()
         self._initialize_h5()
 
@@ -466,7 +470,7 @@ class Exclusions:
                         del file_dict[key]
                         del desc_dict[key]
 
-        # Should we parallelize this?
+        # Can we parallelize this?
         for dname, file in tqdm(file_dict.items(), total=len(file_dict)):
             description = desc_dict[dname]
             self.add_layer(dname, file, description, overwrite=overwrite)
@@ -581,6 +585,14 @@ class Exclusions:
             with h5py.File(self.excl_fpath, "w") as ds:
                 ds.attrs["creation_date"] = date
 
+        # Update attributes if provided
+        if self.attrs:
+            with h5py.File(self.excl_fpath, "r+") as ds:
+                for akey, attr in self.attrs.items():
+                    if isinstance(attr, (list, dict)):
+                        attr = json.dumps(attr) 
+                    ds.attrs[akey] = attr
+
     def _preflight(self):
         """More initializing steps."""
         self._set_profile()
@@ -626,8 +638,10 @@ class Exclusions:
 class Reformatter(Exclusions):
     """Reformat any file or set of files into a reV-shaped raster."""
 
-    def __init__(self, inputs, out_dir, template=None, excl_fpath=None,
-                 overwrite_tif=False, overwrite_dset=False, lookup=None):
+    def __init__(self, inputs, out_dir=".", template=None, excl_fpath=None,
+                 overwrite_tif=False, overwrite_dset=False, attrs=None,
+                 lookup=None, multithread=True, parallel=False,
+                 gdal_cache_max=None):
         """Initialize Reformatter object.
 
         Parameters
@@ -645,7 +659,7 @@ class Reformatter(Exclusions):
             also acceptable.
         out_dir : str
             Path to a directory where reformatted data will be written as
-            GeoTiffs.
+            GeoTiffs. Defaults to current directory.
         template : str
             Path to a raster with target georeferencing attributes. If 'None'
             the 'excl_fpath' must point to an HDF5 file with target
@@ -657,23 +671,43 @@ class Reformatter(Exclusions):
             If `True`, this will overwrite rasters in `out_dir`.
         overwrite_dset : boolean
             If `True`, this will overwrite datasets in `excl_fpath`.
+        attrs : dict
+            Dictionary of top-level attributes. Will overwrite existing
+            attributes.
         lookup : str | dict
             Dictionary or path dictionary of raster value, key pairs
             derived from shapefiles containing string values (optional).
+        multithread : boolean
+            Use mutlithreading in each GDAL process (all available threads). 
+        parallel : boolean
+             Process each dataset in parallel (all cores - 1). 
+        gdal_cache_max : int
+            Maximum cache storage in MW. If not set, it uses the GDAL default.
         """
-        super().__init__(str(excl_fpath), lookup)
+        super().__init__(str(excl_fpath), attrs, lookup)
+
         os.makedirs(out_dir, exist_ok=True)
+
         if excl_fpath is not None:
-            excl_fpath = os.path.abspath(os.path.expanduser(excl_fpath))
+            self.excl_fpath = os.path.abspath(os.path.expanduser(excl_fpath))
+        else:
+            self.excl_fpath = excl_fpath
+
         self._parse_inputs(inputs)
+
         if template is not None:
             self.template = os.path.abspath(os.path.expanduser(template))
         else:
             self.template = template
+
         self.out_dir = os.path.abspath(os.path.expanduser(out_dir))
-        self.excl_fpath = excl_fpath
         self.overwrite_tif = overwrite_tif
         self.overwrite_dset = overwrite_dset
+        self.attrs = attrs
+        self.multithread = multithread
+        self.parallel = parallel
+        self.gdal_cache_max = gdal_cache_max
+
         if lookup:
             self.lookup = lookup
         else:
@@ -735,23 +769,11 @@ class Reformatter(Exclusions):
     def reformat_rasters(self):
         """Reformat all raster files in inputs."""
         # Sequential for now
-        dsts = []
         print(f"Formatting {len(self.rasters)} rasters...")
-        for name, attrs in self.rasters.items():
-            # Set paths
-            path = str(attrs["path"])
-            dst = os.path.join(self.out_dir, f"{name}.tif")
-            dsts.append(dst)
-
-            # Reformat raster
-            self.reformat_raster(
-                path=path,
-                dst=dst
-            )
-
-            # Add formatted path to input
-            self.inputs[name]["formatted_path"] = dst
-
+        if self.parallel:
+            dsts = self._reformat_rasters_parallel()
+        else:
+            dsts = self._reformat_rasters_serial()
         return dsts
 
     def reformat_raster(self, path, dst):
@@ -775,7 +797,9 @@ class Reformatter(Exclusions):
                 src=path,
                 dst=dst,
                 template=self.template,
-                creation_ops=self.creation_options
+                creation_ops=self.creation_options,
+                multithread=self.multithread,
+                cache_max=self.gdal_cache_max
             )
 
     def reformat_vectors(self):
@@ -854,7 +878,7 @@ class Reformatter(Exclusions):
 
     def to_h5(self):
         """transform all formatted rasters into a h5 file"""
-        exclusions = Exclusions(self.excl_fpath, self.lookup)
+        exclusions = Exclusions(self.excl_fpath, self.attrs, self.lookup)
         for name, attrs in tqdm(self.inputs.items(), total=len(self.inputs)):
             if "formatted_path" in attrs:
                 file = attrs["formatted_path"]
@@ -864,6 +888,8 @@ class Reformatter(Exclusions):
                 with h5py.File(self.excl_fpath, "r+") as ds:
                     for akey, attr in attrs.items():
                         if attr:
+                            if isinstance(attr, (dict, list)):
+                                attr = json.dumps(attr)
                             if isinstance(attr, PosixPath):
                                 attr = str(attr)
                             ds[name].attrs[akey] = attr
@@ -909,7 +935,7 @@ class Reformatter(Exclusions):
         # Convert NaNs to None
         for key, attrs in self.inputs.items():
             for akey, attr in attrs.items():
-                if not isinstance(attr, str) and not isinstance(attr, PosixPath):
+                if not isinstance(attr, (str, PosixPath, dict)):
                     if attr is not None:
                         if np.isnan(attr):
                             self.inputs[key][akey] = None
@@ -967,6 +993,34 @@ class Reformatter(Exclusions):
             gdf["geometry"] = gdf["geometry"].buffer(buffer)
 
         return gdf
+
+    def _reformat_rasters_parallel(self):
+        # Collect arguments and destination paths
+        args = []
+        dsts = []
+        for name, attrs in self.rasters.items():
+            path = str(attrs["path"])
+            dst = os.path.join(self.out_dir, f"{name}.tif")
+            dsts.append(dst)
+            args.append((path, dst))
+
+        # Run the reformatting method
+        with mp.Pool(mp.cpu_count()) as pool:
+            for _ in pool.starmap(self.reformat_raster, args):
+                pass
+
+        return dsts
+
+    def _reformat_rasters_serial(self):
+        # Run the reformatting method and collect destination paths
+        dsts = []
+        for name, attrs in self.rasters.items():
+            path = str(attrs["path"])
+            dst = os.path.join(self.out_dir, f"{name}.tif")
+            dsts.append(dst)
+            self.reformat_raster(path=path, dst=dst)
+            self.inputs[name]["formatted_path"] = dst
+        return dsts
 
     def main(self):
         """Reformat all vectors and rasters listed in the inputs."""
