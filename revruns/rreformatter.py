@@ -12,7 +12,6 @@ import json
 import os
 import psutil
 import shutil
-import subprocess as sp
 import tempfile
 import warnings
 import pathos.multiprocessing as mp

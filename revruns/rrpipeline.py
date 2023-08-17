@@ -94,7 +94,7 @@ def rrpipeline(dirpath, walk, file, print_paths):
             if not successful:
                 print(Fore.CYAN + "Submitting " + rpath + "..."
                       + Style.RESET_ALL)
-                cmd = (f"nohup reV -c {path} pipeline --monitor")
+                cmd = (f"nohup reV pipeline -c {path} --monitor")
                 cmd = shlex.split(cmd)
                 output = os.path.join(os.path.dirname(path), "pipeline.out")
                 process = sp.Popen(
