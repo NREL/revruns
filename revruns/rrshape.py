@@ -252,9 +252,3 @@ def main(src, dst, dataset, layer, agg, driver):
 
 if "__name__" == "__main__":
     main()
-
-
-
-
-
-gdal_rasterize -te -2232345.0 344805.0 1494735.0 2380125 -tr 30 -30 -t_srs epsg:3338 

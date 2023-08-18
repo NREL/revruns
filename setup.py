@@ -1,7 +1,41 @@
 # -*- coding: utf-8 -*-
+import os
+import subprocess as sp
 
 from setuptools import setup
+
 from Cython.Build import cythonize
+
+os.environ["CPLUS_INCLUDE_PATH"] = "/usr/include/gdal"
+os.environ["C_INCLUDE_PATH"] = "/usr/include/gdal"
+
+
+def get_gdal_version():
+    """Return system GDAL version."""
+    process = sp.Popen(
+        ["gdal-config", "--version"],
+        stdout=sp.PIPE,
+        stderr=sp.PIPE
+    )
+    sto, ste = process.communicate()
+    if ste:
+        raise OSError("GDAL is causing problems again. Make sure you can run "
+                      "'gdal-config --version' successfully in your terminal")
+    version = sto.decode().replace("\n", "")
+    return version
+
+
+def get_requirements():
+    """Get requirements and update gdal version number."""
+    with open("requirements.txt", encoding="utf-8") as file:
+        reqs = file.readlines()
+    gdal_version = get_gdal_version()
+    gdal_line = [req for req in reqs if req.startswith("gdal")][0]
+    gdal_line = gdal_line[:-1]
+    reqs = [req for req in reqs if not req.startswith("gdal")]
+    gdal_line = f"{gdal_line}=={gdal_version}\n"
+    reqs.append(gdal_line)
+    return reqs
 
 
 setup(
@@ -14,6 +48,7 @@ setup(
     author="Travis Williams",
     author_email="travis.williams@nrel.gov",
     ext_modules=cythonize("revruns/cython_compute.pyx"),
+    install_requires=get_requirements(),
     include_package_data=True,
     package_data={
         "data": [
