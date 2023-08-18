@@ -30,6 +30,7 @@ from shapely.errors import ShapelyDeprecationWarning
 from shapely.geometry import Point
 from tqdm import tqdm
 
+
 pd.set_option("display.max_columns", 500)
 pd.set_option("display.max_rows", 20)
 pd.options.mode.chained_assignment = None
@@ -889,3 +890,82 @@ class Profiles:
         gids = df["best_gen_gid"].values
         for key in keys:
             gen_array = ods[key][:, gids]
+
+
+class Financing:
+    """Methods for calculating various financing figures in the 2022 ATB."""
+
+    def __init__(self, ir=0.015, i=0.025, rroe=.052, df=0.735, tr=.257):
+        """Initialize Financing object.
+
+        Parameters
+        ----------
+        ir : float
+            Interest rate.
+        i : float
+            Infalation rate.
+        rroe : float
+            Return on equity.
+        df : float
+            Debt fraction.
+        tr : float
+            Tax rate.
+        """
+        super().__init__()
+        self.ir = ir
+        self.i = i
+        self.rroe = rroe
+        self.df = df
+        self.tr = tr
+
+    def fcr(self, lifetime=30):
+        """Calculate FCR with standard ATB assumptions but variable lifetime."""
+        # Cacluate weight avg cost of capital and present value of depreciation
+        wacc = self.wacc()
+        pvd = self.pvd()
+
+        # Calculate the cost recovery factor
+        crf = wacc * (1 / (1 - (1 / (1 + wacc) ** lifetime)))
+
+        # Project finance factor
+        profinfactor = (1 - self.tr * pvd) / (1 - self.tr)
+
+        # Fixed charge rate
+        fcr = crf * profinfactor
+
+        return fcr
+
+    def pvd(self):
+        """Return present value of depreciation."""
+        # Modified accelerated cost recovery system
+        macrs = np.array([.20, .32, .192, .1152, .1152, .0576])
+
+        # Depreciation factors
+        df = np.array(
+            [ 
+                0.9592,
+                0.9201,
+                0.8826,
+                0.8466,
+                0.8121,
+                0.7790
+            ]
+        )
+
+        pvd = sum(macrs * df)
+
+        return pvd
+
+    def wacc(self):
+        """Calculate weight average cost of capital"""
+        term1 = 1 + ((1 - self.df) * ((1 + self.rroe) * (1 + self.i) - 1))
+        term2 = (self.df * ((1 + self.ir) * (1 + self.i) - 1) * (1 - self.tr))
+        wacc = ((term1 + term2) / (1 + self.i)) - 1
+        return wacc
+
+
+if __name__ == "__main__":
+    # Attempting to match ATB 2022
+    self = Financing()
+    lifetime = 25
+    print(self.fcr(lifetime))

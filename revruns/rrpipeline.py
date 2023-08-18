@@ -112,7 +112,7 @@ def rrpipeline(dirpath, walk, file, print_paths):
 
 
 if __name__ == "__main__":
-    dirpath = "/shared-projects/rev/projects/hfto/fy23/rev/hydrogen/curve/00_wind_baseline_reference"
+    dirpath = "/shared-projects/rev/projects/hfto/fy23/rev/hydrogen/curve/"
     walk = True
     file = "config_pipeline.json"
     print_paths = False
