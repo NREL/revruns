@@ -13,9 +13,12 @@ import subprocess as sp
 
 from pathlib import Path
 
+import reV
+
 from colorama import Fore, Style
 from revruns.rrlogs import RRLogs
 from rex.utilities.execution import SubprocessManager
+
 
 
 DIR_HELP = ("The directory containing one or more config_pipeline.json "
@@ -47,9 +50,8 @@ def check_status(pdir):
                 entry = status[m]
                 for key in list(entry.keys())[1:]:
                     try:
-                        jobname = entry[key]
                         jobstatus = entry[key]["job_status"]
-                    except IndexError:
+                    except (IndexError, KeyError):
                         jobstatus = "not submitted"
                     statuses.append(jobstatus)
             if all([s == "successful" for s in statuses]):
@@ -94,7 +96,10 @@ def rrpipeline(dirpath, walk, file, print_paths):
             if not successful:
                 print(Fore.CYAN + "Submitting " + rpath + "..."
                       + Style.RESET_ALL)
-                cmd = (f"nohup reV pipeline -c {path} --monitor")
+                if reV.__version__ < "0.8.0":
+                    cmd = (f"nohup reV -c {path} pipeline --monitor")
+                else:
+                    cmd = (f"nohup reV pipeline -c {path} --monitor")
                 cmd = shlex.split(cmd)
                 output = os.path.join(os.path.dirname(path), "pipeline.out")
                 process = sp.Popen(
@@ -112,7 +117,7 @@ def rrpipeline(dirpath, walk, file, print_paths):
 
 
 if __name__ == "__main__":
-    dirpath = "/shared-projects/rev/projects/hfto/fy23/rev/hydrogen/curve/"
-    walk = True
+    dirpath = "/shared-projects/rev/projects/seto/fy23/climate_scenarios/rev/aggregation/00_solar_nlcd2019_ecearth32050"
+    walk = False
     file = "config_pipeline.json"
     print_paths = False

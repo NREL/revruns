@@ -28,6 +28,7 @@ import click
 import pandas as pd
 
 from colorama import Fore, Style
+from tabulate import tabulate
 
 try:
     from pandas.errors import SettingWithCopyWarning
@@ -77,7 +78,8 @@ MODULE_NAMES = {
     "supply-curve": "supply-curve",
     "rep-profiles": "rep-profiles",
     "nrwal": "nrwal",
-    "qaqc": "qa-qc"
+    "qaqc": "qa-qc",
+    "add-reeds-cols": "add-reeds-cols"
 }
 
 FAILURE_STRINGS = ["failure", "fail", "failed", "f"]
@@ -86,6 +88,9 @@ RUNNING_STRINGS = ["running", "run", "r"]
 SUBMITTED_STRINGS = ["submitted", "submit", "sb"]
 SUCCESS_STRINGS = ["successful", "success", "s"]
 UNSUBMITTED_STRINGS = ["unsubmitted", "unsubmit", "u"]
+PRINT_COLUMNS = ["index", "job_name", "job_status", "pipeline_index",
+                  "job_id", "runtime", "date", "date_submitted",
+                  "date_completed"]
 
 
 def safe_round(x, n):
@@ -192,20 +197,23 @@ class RRLogs(No_Pipeline):
 
     def color_print(self, df, print_folder, logdir):
         """Color the status portion of the print out."""
-        from tabulate import tabulate
-
         def color_string(string):
-            if string == "failed":
+            if string in FAILURE_STRINGS:
                 string = Fore.RED + string + Style.RESET_ALL
-            elif string == "successful":
+            elif string in SUCCESS_STRINGS:
                 string = Fore.GREEN + string + Style.RESET_ALL
-            elif string == "R":
+            elif string in RUNNING_STRINGS:
                 string = Fore.BLUE + string + Style.RESET_ALL
             else:
                 string = Fore.YELLOW + string + Style.RESET_ALL
             return string
 
+        tcols = [col for col in PRINT_COLUMNS if col in df]
+        df = df[tcols]
+
         name = "\n" + Fore.CYAN + print_folder + Style.RESET_ALL + ":"
+        if "job_status" not in df:
+            df.insert(2, "job_status", "unknown")
         df["job_status"] = df["job_status"].apply(color_string)
         pdf = tabulate(df, showindex=False, headers=df.columns,
                        tablefmt="simple")
@@ -220,7 +228,7 @@ class RRLogs(No_Pipeline):
     def find_date(self, file):
         """Return the modification date of a file."""
         try:
-            seconds = os.path.getmtime(file)
+            seconds = os.path.getmtime(str(file))
             date = dt.datetime.fromtimestamp(seconds)
             sdate = dt.datetime.strftime(date, "%Y-%m-%d %H:%M")
         except FileNotFoundError:
@@ -365,8 +373,28 @@ class RRLogs(No_Pipeline):
 
         return pid_dirs
 
-    def find_runtime(self, job):
-        """Find the runtime for a specific job (dictionary entry)."""
+    def get_runtime(self, job, file):
+        """Get the runtime for a specific job (dictionary entry)."""
+        # Just in case an old version gets through
+        if "time_start" not in job:
+            return "NA"
+
+        # Start with the start date
+        start_string = job["time_start"]
+        start = dt.datetime.strptime(start_string, "%d-%b-%Y %H:%M:%S")
+        if job["job_status"] == "running":
+            end = dt.datetime.today()
+        else:
+            endstamp = os.path.getctime(file)
+            end = dt.datetime.fromtimestamp(endstamp)
+
+        runtime = end - start
+        minutes = runtime.seconds / 60
+
+        return minutes
+
+    def infer_runtime(self, job):
+        """Infer the runtime for a specific job (dictionary entry)."""
         if "fout" not in job:
             return "NA"
 
@@ -416,14 +444,19 @@ class RRLogs(No_Pipeline):
 
         return minutes
 
-    def find_runtimes(self, status):
+    def find_runtimes(self, status, file):
         """Find runtimes if missing from the main status json."""
+        if "monitor_pid" in status:
+            pid = status.pop("monitor_pid")
         for module, entry in status.items():
             for label, job in entry.items():
                 if "pipeline_index" != label:
                     if isinstance(job, dict):
                         if "job_id" in job and "runtime" not in job:
-                            job["runtime"] = self.find_runtime(job)
+                            if "time_start" not in job:
+                                job["runtime"] = self.infer_runtime(job)
+                            else:
+                                job["runtime"] = self.get_runtime(job, file)
                             status[module][label] = job
         return status
 
@@ -443,7 +476,7 @@ class RRLogs(No_Pipeline):
             else:
                 return None, None
             
-        # Return the dictionary
+        #Get the status dictionary
         with open(file, "r") as f:
             try:
                 status = json.load(f)
@@ -456,7 +489,7 @@ class RRLogs(No_Pipeline):
 
             # Fill in missing runtimes
             try:
-                status = self.find_runtimes(status)
+                status = self.find_runtimes(status, file)
             except IndexError:
                 pass
 
@@ -496,10 +529,6 @@ class RRLogs(No_Pipeline):
         # Copy status dictionary
         cstatus = copy.deepcopy(status)
 
-        # Target columns
-        tcols = ["job_id", "pipeline_index", "hardware", "fout", "dirout",
-                 "job_status", "finput", "runtime", "date"]
-
         # Get the module key
         mkey = MODULE_NAMES[module]
 
@@ -509,13 +538,16 @@ class RRLogs(No_Pipeline):
         else:
             return None
 
+        # This might be empty
+        if len(mstatus) == 1:
+            return None
+
         # The first entry is the pipeline index
-        mindex = mstatus["pipeline_index"]
-        del mstatus["pipeline_index"]
+        mindex = mstatus.pop("pipeline_index")
 
         # If incomplete:
         if not mstatus:
-            for col in tcols:
+            for col in mdf.columns:
                 if col == "job_status":
                     mstatus[col] = "unsubmitted"
                 else:
@@ -526,17 +558,27 @@ class RRLogs(No_Pipeline):
         mdf = pd.DataFrame(mstatus).T
         mdf["pipeline_index"] = mindex
 
+        # Adjust for new path format
+        if "out_fpath" not in mdf and "dirout" not in mdf:
+            mdf["file"] = None
+        else:
+            if "out_fpath" not in mdf:
+                mdf["file"] = mdf.apply(self.join_fpath, axis=1)
+            else:
+                mdf["file"] = mdf["out_fpath"]
+
         # Add date
-        mdf["file"] = mdf.apply(self.join_fpath, axis=1)
-        mdf["date"] = mdf["file"].apply(self.find_date)
+        if "time_end" not in mdf:
+            mdf["date"] = mdf["file"].apply(self.find_date)
+        else:
+            mdf["date_submitted"] = mdf["time_submitted"]
+            mdf["date_completed"] = mdf["time_end"]
 
         if "finput" not in mdf:
             mdf["finput"] = mdf["file"]
 
         if "runtime" not in mdf:
             mdf["runtime"] = "na"
-
-        mdf = mdf[tcols]
 
         return mdf
 
@@ -569,7 +611,7 @@ class RRLogs(No_Pipeline):
                     try:
                         mstatus = self.module_status_dataframe(status, module)
                     except KeyError:
-                        pass
+                        raise
                     dfs.append(mstatus)
                 df = pd.concat(dfs, sort=False)
 
@@ -581,9 +623,10 @@ class RRLogs(No_Pipeline):
             df["job_name"] = df.index
             df = df.reset_index(drop=True)
             df = df.reset_index()
-            df = self.check_index(df, sub_folder)
-            df = df[["index", "job_name", "job_status", "pipeline_index",
-                     "job_id", "runtime", "date"]]
+            if "job_id" in df:
+                df = self.check_index(df, sub_folder)
+            cols = [col for col in PRINT_COLUMNS if col in df]
+            df = df[cols]
             df["runtime"] = df["runtime"].apply(safe_round, n=2)
 
             return df
@@ -616,9 +659,8 @@ class RRLogs(No_Pipeline):
         df = self.status_dataframe(sub_folder, module)
 
         if isinstance(df, str) and df == "updating":
-            print(Fore.YELLOW + "\nStatus file updating for {sub_folder}"
+            print(Fore.YELLOW + f"\nStatus file updating for {sub_folder}"
                   + Style.RESET_ALL)
-
         elif df is None:
             print(Fore.RED + f"\nStatus file not found for {sub_folder}"
                   + Style.RESET_ALL)
@@ -716,12 +758,13 @@ def main(folder, module, status, error, out, walk, csv):
 
 
 if __name__ == "__main__":
-    folder = "/shared-projects/rev/projects/weto/fy23/atb/rev/standard_scenarios/corrections"
+    folder = "/shared-projects/rev/projects/seto/fy23/climate_scenarios/rev/aggregation/00_solar_nlcd2019_ecearth32050"
     error = None
-    out = None
-    walk = True
+    out = 0
+    walk = False
     module = None
     status = None
-    csv = True
+    csv = False
     # self = NPipeline(folder)
     self = RRLogs(folder, module, status, error, out, walk, csv)
+    self.main()
