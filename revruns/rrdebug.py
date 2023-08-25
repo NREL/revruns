@@ -257,9 +257,3 @@ def main(directory):
     """
     rrdb = RRDebug(rundir=directory)
     rrdb.main()
-
-
-if __name__ == "__main__":
-    self = RRDebug()
-    # self.main()
- 

@@ -765,6 +765,3 @@ if __name__ == "__main__":
     module = None
     status = None
     csv = False
-    # self = NPipeline(folder)
-    self = RRLogs(folder, module, status, error, out, walk, csv)
-    self.main()
