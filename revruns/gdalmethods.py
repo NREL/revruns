@@ -342,16 +342,16 @@ def gdal_progress(complete, message, unknown):
     return 1
 
 
-def rasterize(src, dst, attribute, t_srs=None, transform=None, height=None,
-              width=None, template_path=None, navalue=None, all_touch=True,
-              dtype=None, overwrite=False):
+def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
+              yres=None, height=None, width=None, template_path=None,
+              navalue=None, all_touch=True, dtype=None, overwrite=False):
     """Rasterize a shapefile stored on disk and write outputs to a file.
 
     Parameters
     ----------
-    src : str
+    src : str | pathlib.PosixPath
         File path for the source file to rasterize.
-    dst : str
+    dst : str | pathlib.PosixPath
         Destination path for the output raster.
     attribute : str
         Attribute name being rasterized.
@@ -360,6 +360,10 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, height=None,
     transform : list | tuple | array
         Geometric affine transformation:
             (x-min, x-resolution, x-rotation, y-max, y-rotation, y-resoltution)
+    xres : int
+        Output x resolution in the target srs.
+    yres : int
+        Output y resolution in the target srs.
     height : int
         Number of y-axis grid cells.
     width : int
@@ -385,6 +389,7 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, height=None,
         1) Catch exceptions
         2) Progress callback
         3) Use more than just EPSG (doesn't always work, also accept proj4)
+        4) Use input resolution instead of height and width
     """
     # Overwrite existing file
     if os.path.exists(dst):
@@ -396,6 +401,10 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, height=None,
         else:
             print(dst + " exists, use overwrite=True to replace this file.")
             return
+
+    # Convert potential posix paths
+    src = str(src)
+    dst = str(dst)
 
     # Open shapefile, retrieve the layer
     src_data = ogr.Open(src)
@@ -1031,9 +1040,9 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
 
     Parameters
     ----------
-    src : str
+    src : str | pathlib.PosixPath
         Path to source raster file.
-    dst : str
+    dst : str | pathlib.PosixPath
         Path to target raster file.
     dtype : str | gdal object
         GDAL data type. Can be a string or a gdal type object (e.g.
@@ -1071,8 +1080,12 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
             else:
                 shutil.rmtree(dst)
         else:
-            print(dst + " exists, use overwrite=True to replace this file.")
+            print(f"{dst} exists, use overwrite=True to replace this file.")
             return
+
+    # Convert potential posix paths
+    src = str(src)
+    dst = str(dst)
 
     # Open source data set for inherited parameters    
     source = gdal.Open(src)
@@ -1090,7 +1103,7 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
         try:
             dtype = GDAL_TYPEMAP[dtype]["type"]
         except KeyError:
-            print("\n'" + dtype + "' is not an available data type. "
+            print(f"\n'{dtype}' is not an available data type. "
                   "Choose a value from this list:")
             print(str(list(GDAL_TYPEMAP.keys())))
 

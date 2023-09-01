@@ -160,7 +160,7 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
 
     # Not doing this in memory in case it's big
-    tmp_src = dst.replace(".tif", "_tmp.gpkg")
+    tmp_src = str(dst).replace(".tif", "_tmp.gpkg")
     gdf.to_file(tmp_src, driver="GPKG")
     layer_name = fiona.listlayers(tmp_src)[0]
 
@@ -194,7 +194,7 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
 
     # Fill na values
     if fillna:
-        tmp_dst = dst.replace(".tif", "_tmp.tif")
+        tmp_dst = str(dst).replace(".tif", "_tmp.tif")
         sp.call(["gdal_fillnodata.py", dst, tmp_dst])
         if os.path.exists(dst):
             os.remove(dst)
