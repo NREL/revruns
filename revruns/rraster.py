@@ -202,7 +202,7 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
 
     # Cut to vector
     if cutline:
-        tmp_dst = dst.replace(".tif", "_tmp.tif")
+        tmp_dst = str(dst).replace(".tif", "_tmp.tif")
         sp.call(["gdalwarp", dst, tmp_dst, "-cutline", cutline])
         os.remove(dst)
         shutil.move(tmp_dst, dst)

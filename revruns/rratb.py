@@ -59,6 +59,13 @@ class ATB:
                  cost_year=2030, lifetime=30, scenario="moderate",
                  tech="wind_onshore_utility"):
         """Initialize ATB object."""
+        try:
+            assert tech in self.technologies
+        except:
+            raise AssertionError(f"`tech` argument '{tech}' not recognized, "
+                                 "check available technology keys using "
+                                 "ATB.technologies")
+
         self.table_fpath = table_fpath
         self.atb_year = atb_year
         self.case = case
@@ -122,6 +129,47 @@ class ATB:
         df = self._filter(df, res_class=res_class, tech=tech)
         return df["value"]
 
+    def cf_multipliers(self, tech_scenario="moderate", baseline_year=2023,
+                       resource_class=5):
+        """Build vector of generation multipliers based on a baseline year.
+
+        Parameters
+        ----------
+        tech_scenario : str
+            Target technology advancement scenario.
+        baseline_year : int
+            The baseline year to use when calculate improvement ratios.
+        resource_class : int
+            The target resource class.
+
+        Returns
+        -------
+        dict : A dictionary of year improvement ratio key-value pairs.
+        """
+        # Get the full data table, everything else is pre-filtered
+        df = self.full_data
+
+        # Filter
+        cdf = df[
+            (df["core_metric_parameter"] == "CF") &
+            (df["scenario"] == tech_scenario.capitalize()) &
+            (df["technology_alias"] == TECHNOLOGIES[self.tech]) &
+            (df["techdetail"] == f"Class{resource_class}")
+        ]
+
+        cdf = cdf[["core_metric_variable", "core_metric_parameter", "value"]]
+        cdf = cdf.drop_duplicates()
+
+        # Calculate multipliers
+        base = cdf["value"][cdf["core_metric_variable"] == baseline_year]
+        base = float(base)
+        cdf["mult"] = cdf["value"] / base
+
+        # Return as simplified object
+        cf_mults = dict(zip(cdf["core_metric_variable"], cdf["mult"]))
+
+        return cf_mults
+
     def confin(self, res_class=None, tech=None):
         """Return construction financing factor for given tech and year.
 
@@ -169,7 +217,6 @@ class ATB:
     @lru_cache
     def full_data(self):
         """Return the full dataset."""
-        # Read the full dataset 
         if not self.table_fpath:
             if not self.local_path.exists():
                 df = pd.read_csv(self.url, low_memory=False)
@@ -222,4 +269,4 @@ class ATB:
 
 
 if __name__ == "__main__":
-    self = ATB(tech="wind_onshore_utility", atb_year=2023, cost_year=2030)
+    self = ATB(tech="pv_utility", atb_year=2022, cost_year=2030)
