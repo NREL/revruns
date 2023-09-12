@@ -4,6 +4,7 @@ import click
 import os
 import shutil
 import subprocess as sp
+from pathlib import Path
 
 import fiona
 import geopandas as gpd
@@ -220,11 +221,13 @@ def to_grid(gdf, variable, resolution):
         A geopandas data frame
     resolution: int | float
         The resolution of the target grid.
+
     Returns
     -------
     numpy.ndarray, numpy.ndarray
         Returns a 3D array (y, x, time) of data values a 2D array of coordinate
         values (nxy, 2).
+
     Notes
     -----
     - This only takes about a minute for a ~500 X 500 X 8760 dim dataset, but
@@ -258,7 +261,7 @@ def to_grid(gdf, variable, resolution):
 
     # Build kdtree
     ktree = cKDTree(grid_points)
-    dist, indices = ktree.query(points)
+    _, indices = ktree.query(points)
 
     # Those indices associate grid point coordinates with the original points
     gdf["gy"] = grid_points[indices, 0]
@@ -273,6 +276,7 @@ def to_grid(gdf, variable, resolution):
 
     # Okay, now use this to create our 2D empty target grid
     grid = np.zeros((gridy.shape[0], gridx.shape[0]))
+    grid[grid == 0] = np.nan
 
     # Now, use the cartesian indices to add the values to the new grid
     grid[gdf["iy"].values, gdf["ix"].values] = values  # <--------------------- Check these values against the original dataset
@@ -307,10 +311,10 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
 
 
 if __name__ == "__main__":
-    src = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.gpkg"
+    src =  Path("/Users/twillia2/projects/fy23/atb_bespoke/paper_figures/data/figure7/review_reference_2030_moderate_140hh_196rd_supply-curve_vs_reference_2030_moderate_composite_supply-curve_diff_annual_energy-means.gpkg")
     dst = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.tif"
-    resolution = 3_000
+    resolution = 12270
     fillna = False
-    variable = "k"
-    crs = "epsg:7775"
-    cutline = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/districts_discom_7775.gpkg"
+    variable = "annual_energy_means_difference_percent"
+    crs = "epsg:5070"
+    cutline = None
