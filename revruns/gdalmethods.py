@@ -257,6 +257,7 @@ def gdal_options(module="translate", **kwargs):
         print(docs)
         return
 
+
 def creation_options(module, **kwargs):
     """Print available options for a given gdal module.
 
@@ -1059,7 +1060,7 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     creation_ops : dict
         A dictionary of creation option keys and values (optional).
     multithread : boolean
-        Use all cores minus one.       
+        Use all cores minus one. 
     cache_max : int
         Maximum cache storage in MW. If not set, it uses the GDAL default.
     progress : boolean
@@ -1158,7 +1159,7 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     # Set maximum cache
     kwargs["warpMemoryLimit"] = 512
     if cache_max:
-        gdal.SetConfigOption(f"GDAL_CACHEMAX", f"{cache_max}")
+        gdal.SetConfigOption("GDAL_CACHEMAX", f"{cache_max}")
 
     # Check options: https://gdal.org/python/osgeo.gdal-module.html#WarpOptions
     ops = gdal_options("warp", **kwargs)
@@ -1171,6 +1172,7 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     # The stdout is struggling at the end of the process
     if progress:
         print("\n")
+
 
 class Map_Values:
     """Map a set of keys from an input raster (or rasters) to values in an

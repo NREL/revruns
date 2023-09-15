@@ -71,7 +71,7 @@ class RRDebug:
                 new_pipeline.append({module: f"./config_{module}.json"})
                 config = json.load(open(path))
                 self.copy_config(config, module)
-            main_config["pipeline"] = new_pipeline                
+            main_config["pipeline"] = new_pipeline
 
         # Now write the main config
         self.copy_config(main_config, self.module)

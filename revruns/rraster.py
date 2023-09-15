@@ -72,9 +72,11 @@ def gpkg(src, dst, variable, resolution, crs, fillna, cutline):
     gdf = gdf.to_crs(crs)
 
     # Convert to true grid
+    array, transform = to_grid(gdf, variable, resolution)
 
-    # And finally rasterize
-    rrasterize(gdf, resolution, dst, fillna, cutline)
+
+    # Or rasterize
+    # rrasterize(gdf, resolution, dst, fillna, cutline)
 
 
 def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
@@ -220,11 +222,13 @@ def to_grid(gdf, variable, resolution):
         A geopandas data frame
     resolution: int | float
         The resolution of the target grid.
+
     Returns
     -------
     numpy.ndarray, numpy.ndarray
         Returns a 3D array (y, x, time) of data values a 2D array of coordinate
         values (nxy, 2).
+
     Notes
     -----
     - This only takes about a minute for a ~500 X 500 X 8760 dim dataset, but
@@ -307,10 +311,10 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
 
 
 if __name__ == "__main__":
-    src = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.gpkg"
-    dst = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.tif"
-    resolution = 3_000
-    fillna = False
-    variable = "k"
-    crs = "epsg:7775"
-    cutline = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/districts_discom_7775.gpkg"
+    src = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/data/shapefiles/generic_wind_supply-curve-aggregation.gpkg"
+    dst = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/data/shapefiles/generic_wind_supply-curve-aggregation.tif"
+    resolution = 3_200
+    fillna = True
+    variable = "capacity"
+    crs = "+proj=aea +lat_1=55.2 +lat_2=59.6 +lat_0=57.4 +lon_0=22.5 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs"
+    cutline = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/data/shapefiles/lithuania_border.gpkg"

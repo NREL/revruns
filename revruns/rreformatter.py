@@ -1000,6 +1000,7 @@ class Reformatter(Exclusions):
         for name, attrs in self.rasters.items():
             path = str(attrs["path"])
             dst = os.path.join(self.out_dir, f"{name}.tif")
+            self.inputs[name]["formatted_path"] = dst
             dsts.append(dst)
             args.append((path, dst))
 

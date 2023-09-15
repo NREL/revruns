@@ -82,13 +82,13 @@ def _composite(excl_dict, excl_fpath, dst):
 
 
 @click.command()
+@click.argument("dst")
 @click.option("--config", "-c", required=1, help=HELP["config"])
-@click.option("--dst", "-d", required=0, default=None, help=HELP["dst"])
 def main(config, dst):
     """Combine exclusion layers into one composite inclusion raster."""
     composite(config, dst)
 
 
 if __name__ == "__main__":
-    config = "/shared-projects/rev/projects/puerto_rico/fy22/pr100/data/exclusions/config_excl_open.json"
-    dst = "/shared-projects/rev/projects/puerto_rico/fy22/pr100/data/exclusions/exclusions_open.tif"
+    config = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/rev/generic_wind/config_aggregation.json"
+    dst = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/rev/generic_wind/sample_inclusion_layer.tif"

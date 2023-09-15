@@ -48,7 +48,7 @@ setup(
     author="Travis Williams",
     author_email="travis.williams@nrel.gov",
     ext_modules=cythonize("revruns/cython_compute.pyx"),
-    # install_requires=get_requirements(),
+    install_requires=get_requirements(),
     include_package_data=True,
     package_data={
         "data": [

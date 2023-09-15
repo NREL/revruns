@@ -50,16 +50,21 @@ CASES = {
     "randd": "R&D",
     "market": "Market"
 }
+TURBINE_CLASSES = {  # Keys represent top of ws bin @ 110 m/s
+    100: "T1",
+    7.1: "T2",
+    6.5: "T3",
+    5.9: "T4"
+}
 
 
 class ATB:
     """Methods for retrieving data from the Annual Technology Baseline."""
 
-    def __init__(self, table_fpath=None, atb_year=2022, case="randd",
+    def __init__(self, atb_year=2023, case="randd",
                  cost_year=2030, lifetime=30, scenario="moderate",
                  tech="wind_onshore_utility"):
         """Initialize ATB object."""
-        self.table_fpath = table_fpath
         self.atb_year = atb_year
         self.case = case
         self.cost_year = cost_year
@@ -122,6 +127,28 @@ class ATB:
         df = self._filter(df, res_class=res_class, tech=tech)
         return df["value"]
 
+    def cf(self, res_class=None, tech=None):
+        """Return the capacity factor for a given year, res class, and tech.
+
+        Parameters
+        ----------
+        res_class : int
+            Resource class number from 1 to 10. Defaults to class 1.
+        tech : int
+            Technology subclass selection number. New for wind in 2023 since
+            there are now several different turbines that are appropriate for
+            different resource classes. Ranges from 1 to 4.
+
+        Returns
+        -------
+        float : Value representing ccapacity factor for the given year, 
+        technology, resource class, scenario, and technology sub-class.
+        """
+        df = self.data.copy()
+        df = df[df["core_metric_parameter"] == "CF"]
+        df = self._filter(df, res_class=res_class, tech=tech)
+        return df["value"]
+
     def confin(self, res_class=None, tech=None):
         """Return construction financing factor for given tech and year.
 
@@ -170,16 +197,13 @@ class ATB:
     def full_data(self):
         """Return the full dataset."""
         # Read the full dataset 
-        if not self.table_fpath:
-            if not self.local_path.exists():
-                df = pd.read_csv(self.url, low_memory=False)
-                if "Unnamed: 0" in df:
-                    del df["Unnamed: 0"]
-                df.to_csv(self.local_path, index=False)
-            else:
-                df = pd.read_csv(self.local_path, low_memory=False)
+        if not self.local_path.exists():
+            df = pd.read_csv(self.url, low_memory=False)
+            if "Unnamed: 0" in df:
+                del df["Unnamed: 0"]
+            df.to_csv(self.local_path, index=False)
         else:
-            df = pd.read_csv(self.table_fpath, low_memory=False)
+            df = pd.read_csv(self.local_path, low_memory=False)
         return df
 
     def opex(self, res_class=None, tech=None):
@@ -222,4 +246,4 @@ class ATB:
 
 
 if __name__ == "__main__":
-    self = ATB(tech="wind_onshore_utility", atb_year=2023, cost_year=2030)
+    self = ATB(tech="pv_utility", atb_year=2023, cost_year=2030)

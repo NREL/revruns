@@ -1,16 +1,7 @@
 """Check with reV status, output, and error logs.
 
 TODO:
-    - Catch the scenario when a run just starts and it's time is INVALID
-
     - See if we can't use pyslurm to speed up the squeue call
-
-    - rrpipeline is outputting all logs to the working directory, fix that or
-      handle it here.
-
-    - Runtimes for failed runs.
-
-    - Datetime stamps
 
     - This was made in a rush before I was fast enough to build properly. Also,
        This is probably the most frequently used revrun cli, so this should
@@ -38,21 +29,27 @@ except ImportError:
 warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
 
 
-ERROR_HELP = ("A job ID. This will print the first 20 lines of the error log "
-              "of a job.")
 FOLDER_HELP = ("Path to a folder with a completed set of batched reV runs. "
                "Defaults to current directory. (str)")
 MODULE_HELP = ("The reV module logs to check. Defaults to all modules: gen, "
                "collect, multi-year, aggregation, supply-curve, or "
-               "rep-profiles.")
-OUT_HELP = ("A job ID. This will print the first 20 lines of the standard "
-            "output log of a job.")
+               "rep-profiles. (str)")
+ERROR_HELP = ("A job index. This will print the error log of a specific job. "
+              "(int)")
+OUT_HELP = ("A job index. This will print the standard output log of a "
+            "specific job.(int)")
 STATUS_HELP = ("Print jobs with a given status. Option include 'failed' "
                "(or 'f'), 'success' (or 's'), 'pending' (or 'p'), 'running' "
-               "(or 'r'), 'submitted' (or 'sb') and 'unsubmitted (or 'usb').")
+               "(or 'r'), 'submitted' (or 'sb') and 'unsubmitted (or 'usb'). "
+               "(str)")
 WALK_HELP = ("Walk the given directory structure and return the status of "
-             "all jobs found.")
-SAVE_HELP = ("Write the outputs of an rrlogs call to a csv.")
+             "all jobs found. (boolean")
+FULL_PRINT_HELP = ("When printing log outputs (using -o <pid> or -e <pid>) "
+                   "print the full content of the file to the terminal. This "
+                   "may fill up your entire shell so the default is to limit "
+                   "this output to the first 20 lines of of the target log "
+                   "file. (boolean)")
+SAVE_HELP = ("Write the outputs of an rrlogs call to a csv. (boolean)")
 
 CONFIG_DICT = {
     "gen": "config_gen.json",
@@ -119,14 +116,13 @@ class No_Pipeline(Log_Finder):
     @property
     def error_logs(self):
         """Return paths to all error logs."""
-        self.folder
 
 
 class RRLogs(No_Pipeline):
     """Methods for checking rev run statuses."""
 
     def __init__(self, folder=".", module=None, status=None, error=None,
-                 out=None, walk=False, csv=False):
+                 out=None, walk=False, full_print=False, csv=False):
         """Initialize an RRLogs object."""
         self.folder = os.path.expanduser(os.path.abspath(folder))
         self.module = module
@@ -134,11 +130,12 @@ class RRLogs(No_Pipeline):
         self.error = error
         self.out = out
         self.walk = walk
+        self.full_print = full_print
         self.csv = csv
 
     def __repr__(self):
         """Return RRLogs object representation string."""
-        attrs = ", ".join(f"{k}={v}" for k,v in self.__dict__.items())
+        attrs = ", ".join(f"{k}={v}" for k, v in self.__dict__.items())
         return f"<RRLogs object: {attrs}>"
 
     def check_entries(self, print_df, check):
@@ -159,7 +156,7 @@ class RRLogs(No_Pipeline):
             print("Could not find status filter.")
 
         return print_df
-    
+
     def check_index(self, df, sub_folder):
         """Check that log files for a given status index exist."""
         for i, row in df.iterrows():
@@ -171,6 +168,7 @@ class RRLogs(No_Pipeline):
 
     def checkout(self, logdir, pid, output="error"):
         """Print first 20 lines of an error or stdout log file."""
+        # Find the appropriate files
         if output == "error":
             pattern = "*e"
             name = "Error"
@@ -180,6 +178,7 @@ class RRLogs(No_Pipeline):
             name = "STDOUT"
             outs = glob(os.path.join(logdir, "stdout", pattern))
 
+        # Find the target file
         try:
             log = [o for o in outs if str(pid) in o][0]
         except IndexError:
@@ -187,13 +186,18 @@ class RRLogs(No_Pipeline):
                   + " not found." + Style.RESET_ALL)
             return
 
+        # Read each line in the log
         with open(log, "r") as file:
             lines = file.readlines()
+
+        # Limit the number of lines if full_print is not set
+        if not self.full_print:
             if len(lines) > 20:
+                lines = lines[-20:]
                 print("  \n   ...   \n")
-            for line in lines[-20:]:
-                print(line)
-            print(Fore.YELLOW + "cat " + log + Style.RESET_ALL)
+        for line in lines:
+            print(line)
+        print(Fore.YELLOW + "cat " + log + Style.RESET_ALL)
 
     def color_print(self, df, print_folder, logdir):
         """Color the status portion of the print out."""
@@ -246,7 +250,7 @@ class RRLogs(No_Pipeline):
 
     def find_files(self, folder, file="config_pipeline.json", pattern=None):
         """Walk the dirpath directories and find all file paths.
-        
+
         Parameters
         ----------
         folder : str
@@ -279,7 +283,7 @@ class RRLogs(No_Pipeline):
 
         return paths
 
-    def find_logs(self, folder):  # <---------------------------------------------------- Speed this up or use find_files
+    def find_logs(self, folder):  # <------------------------------------------ Speed this up or use find_files
         """Find the log directory, assumes one per folder."""
         # If there is a log directory directly in this folder use that
         contents = glob(os.path.join(folder, "*"))
@@ -366,7 +370,7 @@ class RRLogs(No_Pipeline):
                 pid = file[idx + 1:].replace(".e", "")
                 if pid == str(target_pid):
                     pid_dirs.append(folder)
-    
+
         if not pid_dirs:
             msg = "No log files found for pid {}".format(target_pid)
             raise FileNotFoundError(Fore.RED + msg + Style.RESET_ALL)
@@ -447,7 +451,7 @@ class RRLogs(No_Pipeline):
     def find_runtimes(self, status, file):
         """Find runtimes if missing from the main status json."""
         if "monitor_pid" in status:
-            pid = status.pop("monitor_pid")
+            _ = status.pop("monitor_pid")
         for module, entry in status.items():
             for label, job in entry.items():
                 if "pipeline_index" != label:
@@ -475,8 +479,8 @@ class RRLogs(No_Pipeline):
                     return None, None
             else:
                 return None, None
-            
-        #Get the status dictionary
+
+        # Get the status dictionary
         with open(file, "r") as f:
             try:
                 status = json.load(f)
@@ -545,6 +549,10 @@ class RRLogs(No_Pipeline):
         # The first entry is the pipeline index
         mindex = mstatus.pop("pipeline_index")
 
+        # Create data frame
+        mdf = pd.DataFrame(mstatus).T
+        mdf["pipeline_index"] = mindex
+
         # If incomplete:
         if not mstatus:
             for col in mdf.columns:
@@ -553,10 +561,6 @@ class RRLogs(No_Pipeline):
                 else:
                     mstatus[col] = None
             mstatus = {mkey: mstatus}
-
-        # Create data frame
-        mdf = pd.DataFrame(mstatus).T
-        mdf["pipeline_index"] = mindex
 
         # Adjust for new path format
         if "out_fpath" not in mdf and "dirout" not in mdf:
@@ -686,11 +690,22 @@ class RRLogs(No_Pipeline):
                           + Style.RESET_ALL)
                     return
 
+                # Print logs
                 if error:
-                    pid = df["job_id"][df["index"] == int(error)].iloc[0]
+                    try:
+                        pid = df["job_id"][df["index"] == int(error)].iloc[0]
+                    except IndexError:
+                        print(Fore.YELLOW + f"Error log for job id {error} "
+                              "not yet available." + Style.RESET_ALL)
+                        return
                     self.checkout(logdir, pid, output="error")
                 if out:
-                    pid = df["job_id"][df["index"] == int(out)].iloc[0]
+                    try:
+                        pid = df["job_id"][df["index"] == int(out)].iloc[0]
+                    except IndexError:
+                        print(Fore.YELLOW + f"Stdout log for job id {out} not "
+                              "yet available." + Style.RESET_ALL)
+                        return
                     self.checkout(logdir, pid, output="stdout")
 
         return df
@@ -735,8 +750,9 @@ class RRLogs(No_Pipeline):
 @click.option("--error", "-e", default=None, help=ERROR_HELP)
 @click.option("--out", "-o", default=None, help=OUT_HELP)
 @click.option("--walk", "-w", is_flag=True, help=WALK_HELP)
+@click.option("--full_print", "-fp", is_flag=True, help=FULL_PRINT_HELP)
 @click.option("--csv", "-c", is_flag=True, help=SAVE_HELP)
-def main(folder, module, status, error, out, walk, csv):
+def main(folder, module, status, error, out, walk, full_print, csv):
     r"""REVRUNS - Check Logs.
 
     Check log files of a reV run directory. Assumes certain standard
@@ -753,15 +769,16 @@ def main(folder, module, status, error, out, walk, csv):
     "rep-profiles": "config_rep-profiles.json" \n
     "qaqc": "config_qaqc.json" \n
     """
-    rrlogs = RRLogs(folder, module, status, error, out, walk, csv)
+    rrlogs = RRLogs(folder, module, status, error, out, walk, full_print, csv)
     rrlogs.main()
 
 
 if __name__ == "__main__":
-    folder = "/shared-projects/rev/projects/seto/fy23/climate_scenarios/rev/aggregation/00_solar_nlcd2019_ecearth32050"
+    folder = "/projects/rev/projects/ffi/fy23/rev/generation/1_n_4800kw_133m_dia_120m_hub"
     error = None
     out = 0
     walk = False
     module = None
     status = None
+    full_print = True
     csv = False

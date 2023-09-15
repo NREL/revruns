@@ -5,6 +5,7 @@ import json
 import click
 import numpy as np
 
+
 from revruns.constants import (
     TEMPLATES,
     SAM_TEMPLATES,
@@ -70,7 +71,7 @@ MODULE_NAMES = {
     "sc": "supply-curve",
     "rp": "rep-profiles",
     "ba": "batch",
-    "pipe": "pipeline",
+    "pi": "pipeline",
     "sl": "slurm"
 }
 
@@ -149,19 +150,19 @@ def main(generation, bespoke, collect, multiyear, aggregation, supplycurve,
     specified generator, provide the '--all-years' or '-ay' flag.
     """
     # Get requested modules as strings
-    strings = np.array(["gen", "bsp", "co", "my", "ag", "sc", "rp", "pi", "ba",
-                        "sl"])
+    strings = np.array(["gen", "bsp", "co", "my", "ag", "sc", "rp", "ba"])
+    full_strings = np.array([MODULE_NAMES[string] for string in strings])
     requested = np.array([generation, bespoke, collect, multiyear, aggregation,
-                          supplycurve, repprofiles, pipeline, batch, slurm])
+                          supplycurve, repprofiles, batch])
 
     # Convert module selections from booleans to key strings
     if full:
-        modules = strings
+        modules = full_strings
     else:
-        modules = strings[requested]
+        modules = full_strings[requested]
 
-    # Retrieve the template objects
-    templates = {m: TEMPLATES[m] for m in modules if m != "sl"}
+    # Create a full templates dictionary directly from reV
+    templates = {m: TEMPLATES[m] for m in modules}
 
     # Assign all years (easier to subtract than add), and add allocation
     years = DEFAULT_YEARS["windpower"]
@@ -183,11 +184,14 @@ def main(generation, bespoke, collect, multiyear, aggregation, supplycurve,
             dict = {MODULE_NAMES[m]: DEFAULT_PATHS[m]}
             pipeline["pipeline"].append(dict)
         write_config(pipeline, "./config_pipeline.json", verbose)
+    elif pipeline:
+        write_config(PIPELINE_TEMPLATE, "./config_pipeline.json", verbose)
 
     # Write sam template:
     if tech:
         write_config(SAM_TEMPLATES[tech], f"sam_{tech}.json", verbose)
 
+    # Write sbatch submission template
     if slurm:
         write_config(SLURM_TEMPLATE, DEFAULT_PATHS["slurm"], verbose)
 
