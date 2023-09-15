@@ -5,12 +5,13 @@ import os
 import shutil
 import subprocess as sp
 
+from pathlib import Path
+
 import fiona
 import geopandas as gpd
 import h5py
 import numpy as np
 import pandas as pd
-import rasterio as rio
 
 from revruns import rr
 from revruns.gdalmethods import rasterize
@@ -204,7 +205,7 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
 
     # Cut to vector
     if cutline:
-        tmp_dst = dst.replace(".tif", "_tmp.tif")
+        tmp_dst = str(dst).replace(".tif", "_tmp.tif")
         sp.call(["gdalwarp", dst, tmp_dst, "-cutline", cutline])
         os.remove(dst)
         shutil.move(tmp_dst, dst)
@@ -262,7 +263,7 @@ def to_grid(gdf, variable, resolution):
 
     # Build kdtree
     ktree = cKDTree(grid_points)
-    dist, indices = ktree.query(points)
+    _, indices = ktree.query(points)
 
     # Those indices associate grid point coordinates with the original points
     gdf["gy"] = grid_points[indices, 0]
@@ -277,6 +278,7 @@ def to_grid(gdf, variable, resolution):
 
     # Okay, now use this to create our 2D empty target grid
     grid = np.zeros((gridy.shape[0], gridx.shape[0]))
+    grid[grid == 0] = np.nan
 
     # Now, use the cartesian indices to add the values to the new grid
     grid[gdf["iy"].values, gdf["ix"].values] = values  # <--------------------- Check these values against the original dataset
@@ -311,10 +313,10 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
 
 
 if __name__ == "__main__":
-    src = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/data/shapefiles/generic_wind_supply-curve-aggregation.gpkg"
-    dst = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/data/shapefiles/generic_wind_supply-curve-aggregation.tif"
-    resolution = 3_200
-    fillna = True
-    variable = "capacity"
-    crs = "+proj=aea +lat_1=55.2 +lat_2=59.6 +lat_0=57.4 +lon_0=22.5 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs"
-    cutline = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/data/shapefiles/lithuania_border.gpkg"
+    src =  Path("/Users/twillia2/projects/fy23/atb_bespoke/paper_figures/data/figure7/review_reference_2030_moderate_140hh_196rd_supply-curve_vs_reference_2030_moderate_composite_supply-curve_diff_annual_energy-means.gpkg")
+    dst = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.tif"
+    resolution = 12270
+    fillna = False
+    variable = "annual_energy_means_difference_percent"
+    crs = "epsg:5070"
+    cutline = None
