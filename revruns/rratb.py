@@ -72,7 +72,6 @@ class ATB:
                                  "check available technology keys using "
                                  "ATB.technologies")
 
-        self.table_fpath = table_fpath
         self.atb_year = atb_year
         self.case = case
         self.cost_year = cost_year
@@ -223,16 +222,14 @@ class ATB:
     @lru_cache
     def full_data(self):
         """Return the full dataset."""
-        if not self.table_fpath:
-            if not self.local_path.exists():
-                df = pd.read_csv(self.url, low_memory=False)
-                if "Unnamed: 0" in df:
-                    del df["Unnamed: 0"]
-                df.to_csv(self.local_path, index=False)
-            else:
-                df = pd.read_csv(self.local_path, low_memory=False)
+        if not self.local_path.exists():
+            df = pd.read_csv(self.url, low_memory=False)
+            if "Unnamed: 0" in df:
+                del df["Unnamed: 0"]
+            df.to_csv(self.local_path, index=False)
         else:
             df = pd.read_csv(self.local_path, low_memory=False)
+
         return df
 
     def opex(self, res_class=None, tech=None):

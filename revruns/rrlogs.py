@@ -11,12 +11,16 @@ import copy
 import datetime as dt
 import json
 import os
+import time
 import warnings
 
 from glob import glob
+from pathlib import Path
 
 import click
+import h5py
 import pandas as pd
+import pathos.multiprocessing as mp
 
 from colorama import Fore, Style
 from tabulate import tabulate
@@ -50,6 +54,9 @@ FULL_PRINT_HELP = ("When printing log outputs (using -o <pid> or -e <pid>) "
                    "this output to the first 20 lines of of the target log "
                    "file. (boolean)")
 SAVE_HELP = ("Write the outputs of an rrlogs call to a csv. (boolean)")
+STATS_HELP = ("Print summary statistics instead of status information. Only "
+              "works for existing files (i.e., completed files not in "
+              "chunk files). (boolean)")
 
 CONFIG_DICT = {
     "gen": "config_gen.json",
@@ -86,8 +93,18 @@ SUBMITTED_STRINGS = ["submitted", "submit", "sb"]
 SUCCESS_STRINGS = ["successful", "success", "s"]
 UNSUBMITTED_STRINGS = ["unsubmitted", "unsubmit", "u"]
 PRINT_COLUMNS = ["index", "job_name", "job_status", "pipeline_index",
-                  "job_id", "runtime", "date", "date_submitted",
-                  "date_completed"]
+                 "job_id", "runtime", "date", "date_submitted",
+                 "date_completed"]
+STAT_COLORS = {
+    "count": "\033[30m",
+    "mean": "\033[32m",
+    "std": "\033[96m",
+    "min": "\033[34m",
+    "25%": "\033[94m",
+    "50%": "\033[93m",
+    "75%": "\033[31m",
+    "max": "\033[91m"
+}
 
 
 def safe_round(x, n):
@@ -97,6 +114,23 @@ def safe_round(x, n):
     except TypeError:
         xn = x
     return xn
+
+
+def read_h5(fpath, dataset):
+    """Read an h5 file and return dataframe."""
+    # Pull data from file
+    with h5py.File(fpath) as ds:
+        if "cf_mean-means" in ds:
+            dataset = "cf_mean-means"
+        elif "rep_profiles_0" in ds:
+            dataset = "rep_profiles_0"
+        else:
+            dataset = "cf_mean"
+        meta = pd.DataFrame(ds["meta"][:])
+        data = ds[dataset][:]
+        meta[dataset] = data
+    meta = meta[["gid", dataset]]
+    return meta
 
 
 class Log_Finder:
@@ -122,7 +156,8 @@ class RRLogs(No_Pipeline):
     """Methods for checking rev run statuses."""
 
     def __init__(self, folder=".", module=None, status=None, error=None,
-                 out=None, walk=False, full_print=False, csv=False):
+                 out=None, walk=False, full_print=False, csv=False,
+                 stats=False):
         """Initialize an RRLogs object."""
         self.folder = os.path.expanduser(os.path.abspath(folder))
         self.module = module
@@ -132,6 +167,7 @@ class RRLogs(No_Pipeline):
         self.walk = walk
         self.full_print = full_print
         self.csv = csv
+        self.stats = stats
 
     def __repr__(self):
         """Return RRLogs object representation string."""
@@ -197,37 +233,8 @@ class RRLogs(No_Pipeline):
                 print("  \n   ...   \n")
         for line in lines:
             print(line)
-        print(Fore.YELLOW + "cat " + log + Style.RESET_ALL)
+        print(Fore.YELLOW + log + Style.RESET_ALL)
 
-    def color_print(self, df, print_folder, logdir):
-        """Color the status portion of the print out."""
-        def color_string(string):
-            if string in FAILURE_STRINGS:
-                string = Fore.RED + string + Style.RESET_ALL
-            elif string in SUCCESS_STRINGS:
-                string = Fore.GREEN + string + Style.RESET_ALL
-            elif string in RUNNING_STRINGS:
-                string = Fore.BLUE + string + Style.RESET_ALL
-            else:
-                string = Fore.YELLOW + string + Style.RESET_ALL
-            return string
-
-        tcols = [col for col in PRINT_COLUMNS if col in df]
-        df = df[tcols]
-
-        name = "\n" + Fore.CYAN + print_folder + Style.RESET_ALL + ":"
-        if "job_status" not in df:
-            df.insert(2, "job_status", "unknown")
-        df["job_status"] = df["job_status"].apply(color_string)
-        pdf = tabulate(df, showindex=False, headers=df.columns,
-                       tablefmt="simple")
-        print(name)
-        if logdir:
-            print("  logs: " + logdir + Style.RESET_ALL + "\n")
-        else:
-            msg = "Could not find log directory."
-            print(Fore.YELLOW + msg + Style.RESET_ALL)
-        print(pdf)
 
     def find_date(self, file):
         """Return the modification date of a file."""
@@ -377,25 +384,20 @@ class RRLogs(No_Pipeline):
 
         return pid_dirs
 
-    def get_runtime(self, job, file):
-        """Get the runtime for a specific job (dictionary entry)."""
+    def get_runtime(self, job):
+        """Get the time from start to present for a job (dictionary entry)."""
         # Just in case an old version gets through
         if "time_start" not in job:
             return "NA"
 
-        # Start with the start date
+        # Calculate runtime up to now
         start_string = job["time_start"]
         start = dt.datetime.strptime(start_string, "%d-%b-%Y %H:%M:%S")
-        if job["job_status"] == "running":
-            end = dt.datetime.today()
-        else:
-            endstamp = os.path.getctime(file)
-            end = dt.datetime.fromtimestamp(endstamp)
-
+        end = dt.datetime.today()
         runtime = end - start
-        minutes = runtime.seconds / 60
+        runtime = str(runtime).split(".")[0]
 
-        return minutes
+        return runtime
 
     def infer_runtime(self, job):
         """Infer the runtime for a specific job (dictionary entry)."""
@@ -454,24 +456,32 @@ class RRLogs(No_Pipeline):
             _ = status.pop("monitor_pid")
         for module, entry in status.items():
             for label, job in entry.items():
-                if "pipeline_index" != label:
-                    if isinstance(job, dict):
+                if isinstance(job, dict):
+                    if "pipeline_index" != label:
                         if "job_id" in job and "runtime" not in job:
-                            if "time_start" not in job:
-                                job["runtime"] = self.infer_runtime(job)
+                            if "total_runtime" in job:
+                                job["runtime"] = job["total_runtime"]
+                            # elif "time_start" not in job:
+                            #     job["runtime"] = self.infer_runtime(job)
                             else:
-                                job["runtime"] = self.get_runtime(job, file)
+                                job["runtime"] = self.get_runtime(job)
                             status[module][label] = job
         return status
 
     def find_status(self, sub_folder):
         """Find the job status json."""
+        # Two possible locations for status files
+        sub_folder = Path(sub_folder)
+        if sub_folder.joinpath(".gaps").exists():
+            if any(sub_folder.joinpath(".gaps").glob("*status*")):
+                sub_folder = sub_folder.joinpath(".gaps")
+
         # Find output directory
         try:
-            files = glob(os.path.join(sub_folder, "*.json"))
-            file = [f for f in files if "_status.json" in f][0]
+            files = list(sub_folder.glob("*.json"))
+            file = [f for f in files if "_status.json" in f.name][0]
         except IndexError:
-            outdir = self.find_outputs(sub_folder)
+            outdir = self.find_outputs(str(sub_folder))
             if outdir:
                 files = glob(os.path.join(outdir, "*.json"))
                 file = [f for f in files if "_status.json" in f]
@@ -562,27 +572,35 @@ class RRLogs(No_Pipeline):
                     mstatus[col] = None
             mstatus = {mkey: mstatus}
 
-        # Adjust for new path format
-        if "out_fpath" not in mdf and "dirout" not in mdf:
-            mdf["file"] = None
-        else:
-            if "out_fpath" not in mdf:
-                mdf["file"] = mdf.apply(self.join_fpath, axis=1)
+        # If stats, add summary stat fields
+        if self.stats:
+            if "out_file" in mdf:
+                mdf = self._add_stats(mdf)
             else:
-                mdf["file"] = mdf["out_fpath"]
+                mdf = None
 
-        # Add date
-        if "time_end" not in mdf:
-            mdf["date"] = mdf["file"].apply(self.find_date)
+        # Otherwise, format the run status fields
         else:
-            mdf["date_submitted"] = mdf["time_submitted"]
-            mdf["date_completed"] = mdf["time_end"]
+            if "out_fpath" not in mdf and "dirout" not in mdf:
+                mdf["file"] = None
+            else:
+                if "out_fpath" not in mdf:
+                    mdf["file"] = mdf.apply(self.join_fpath, axis=1)
+                else:
+                    mdf["file"] = mdf["out_fpath"]
 
-        if "finput" not in mdf:
-            mdf["finput"] = mdf["file"]
+            # Add date
+            if "time_end" not in mdf:
+                mdf["date"] = mdf["file"].apply(self.find_date)
+            else:
+                mdf["date_submitted"] = mdf["time_submitted"]
+                mdf["date_completed"] = mdf["time_end"]
 
-        if "runtime" not in mdf:
-            mdf["runtime"] = "na"
+            if "finput" not in mdf:
+                mdf["finput"] = mdf["file"]
+
+            if "runtime" not in mdf:
+                mdf["runtime"] = "na"
 
         return mdf
 
@@ -616,22 +634,27 @@ class RRLogs(No_Pipeline):
                         mstatus = self.module_status_dataframe(status, module)
                     except KeyError:
                         raise
-                    dfs.append(mstatus)
+                    if mstatus is not None:
+                        dfs.append(mstatus)
+                if not dfs:
+                    return
+
                 df = pd.concat(dfs, sort=False)
 
             # Here, let's improve the time estimation somehow
-            if "runtime" not in df.columns:
+            if "runtime" not in df.columns and not self.stats:
                 df["runtime"] = "nan"
 
             # And refine this down for the printout
-            df["job_name"] = df.index
-            df = df.reset_index(drop=True)
-            df = df.reset_index()
-            if "job_id" in df:
-                df = self.check_index(df, sub_folder)
-            cols = [col for col in PRINT_COLUMNS if col in df]
-            df = df[cols]
-            df["runtime"] = df["runtime"].apply(safe_round, n=2)
+            if not self.stats:
+                df["job_name"] = df.index
+                df = df.reset_index(drop=True)
+                df = df.reset_index()
+                if "job_id" in df:
+                    df = self.check_index(df, sub_folder)
+                cols = [col for col in PRINT_COLUMNS if col in df]
+                df = df[cols]
+                df["runtime"] = df["runtime"].apply(safe_round, n=2)
 
             return df
         else:
@@ -639,17 +662,49 @@ class RRLogs(No_Pipeline):
 
     def to_csv(self, df):
         """Save the outputs to a CSV."""
-        # This can be a single or list of data frames
-        if isinstance(df, list):
-            df = pd.concat(df)
-
         # Make a destination path
         date = dt.datetime.today()
-        stamp = dt.datetime.strftime(date, "%Y%m%d%H%M%S")
-        dst = os.path.join(self.folder, f"rrlogs_{stamp}.csv")
+        stamp = dt.datetime.strftime(date, "%Y%m%d%H%M")
+        if self.stats:
+            dst = os.path.join(self.folder, f"rrlogs_{stamp}_stats.csv")
+        else:
+            dst = os.path.join(self.folder, f"rrlogs_{stamp}.csv")
 
         # Write file
         df.to_csv(dst, index=False)
+
+    def _add_stat(self, fpath):
+        """Returns summary statistics for a reV output file."""
+        # Read in the mean capacity factor field for file
+        ext = fpath.split(".")[-1]
+        if ext == "csv":
+            df = pd.read_csv(
+                fpath,
+                usecols=["sc_point_gid", "mean_cf"]
+            )
+        elif ext == "h5":
+            df = read_h5(fpath, "cf_mean")
+        else:
+            raise NotImplementedError(f"Cannot summarize {ext} files.")
+
+        # Calculate min, max, std, etc.
+        return df.iloc[:, -1].describe()
+
+    def _add_stats(self, mdf):
+        """Add stats to a module status data frame."""
+        # Only return for existing files (i.e., not incomplete or chunk_files)
+        mdf["exists"] = mdf["out_file"].apply(os.path.exists)
+        mdf = mdf[mdf["exists"]]
+
+        # Add stats if anything is left
+        if mdf.shape[0] > 0:
+            fpaths = mdf["out_file"]
+            out = fpaths.apply(self._add_stat)
+            mdf["fname"] = mdf["out_file"].apply(lambda x: os.path.basename(x))
+            mdf = mdf[["job_id", "fname"]]
+            mdf = mdf.join(out)
+
+        return mdf
 
     def _run(self, args):
         """Print status and job pids for a single project directory."""
@@ -677,9 +732,13 @@ class RRLogs(No_Pipeline):
             if status:
                 df = self.check_entries(df, status)
 
-            if not error and not out and df.shape[0] > 0:
+            if not error and not out and df.shape[0] > 0 and not self.stats:
                 print_folder = os.path.relpath(sub_folder, folder)
-                self.color_print(df, print_folder, logdir)
+                self._status_print(df, print_folder, logdir)
+
+            if self.stats:
+                print_folder = os.path.relpath(sub_folder, folder)
+                self._stat_print(df, print_folder)
 
             # If a specific status was requested
             if error or out:
@@ -710,6 +769,60 @@ class RRLogs(No_Pipeline):
 
         return df
 
+    def _stat_print(self, df, print_folder):
+        """Color the statistical portion of data frame and print."""
+        # Filter for just stat columns
+        df = df[["job_id", "fname", *list(STAT_COLORS)]]
+
+        # Set stats to intuitive colors
+        def color_column(values):
+            name = values.name
+            if name in STAT_COLORS:
+                color = STAT_COLORS[name]
+                values = values.apply(
+                    lambda x: color + str(round(x, 4)) + Style.RESET_ALL
+                )
+            return values
+
+        # Print containing folder name
+        name = "\n" + Fore.CYAN + print_folder + Style.RESET_ALL + ":"
+
+        # Color the table
+        df = df.apply(color_column, axis=0)
+
+        pdf = tabulate(df, showindex=False, headers=df.columns,
+                       tablefmt="simple")
+        print(f"{name}\n{pdf}")
+
+    def _status_print(self, df, print_folder, logdir):
+        """Color the status portion of data frame and print."""
+        def color_string(string):
+            if string in FAILURE_STRINGS:
+                string = Fore.RED + string + Style.RESET_ALL
+            elif string in SUCCESS_STRINGS:
+                string = Fore.GREEN + string + Style.RESET_ALL
+            elif string in RUNNING_STRINGS:
+                string = Fore.BLUE + string + Style.RESET_ALL
+            else:
+                string = Fore.YELLOW + string + Style.RESET_ALL
+            return string
+
+        tcols = [col for col in PRINT_COLUMNS if col in df]
+        df = df[tcols]
+
+        name = "\n" + Fore.CYAN + print_folder + Style.RESET_ALL + ":"
+        if "job_status" not in df:
+            df.insert(2, "job_status", "unknown")
+        df["job_status"] = df["job_status"].apply(color_string)
+        pdf = tabulate(df, showindex=False, headers=df.columns,
+                       tablefmt="simple")
+        if logdir:
+            print("  logs: " + logdir + Style.RESET_ALL + "\n")
+        else:
+            msg = "Could not find log directory."
+            print(Fore.YELLOW + msg + Style.RESET_ALL)
+        print(f"{name}\n{pdf}")
+
     def main(self):
         """Run the appropriate rrlogs functions for a folder."""
         # Unpack args
@@ -730,10 +843,15 @@ class RRLogs(No_Pipeline):
 
         # Run rrlogs for each
         if len(folders) > 1:
-            df = []
+            dfs = []
+            args = []
             for sub_folder in folders:
-                args = (folder, sub_folder, module, status, error, out)
-                df.append(self._run(args))
+                args.append((folder, sub_folder, module, status, error, out))
+            with mp.Pool(mp.cpu_count() - 1) as pool:
+                for out in pool.imap(self._run, args):
+                    dfs.append(out)
+            df = pd.concat(dfs)
+            df = df.dropna(axis=1, how="all")
         else:
             args = (folder, folders[0], module, status, error, out)
             df = self._run(args)
@@ -752,7 +870,8 @@ class RRLogs(No_Pipeline):
 @click.option("--walk", "-w", is_flag=True, help=WALK_HELP)
 @click.option("--full_print", "-fp", is_flag=True, help=FULL_PRINT_HELP)
 @click.option("--csv", "-c", is_flag=True, help=SAVE_HELP)
-def main(folder, module, status, error, out, walk, full_print, csv):
+@click.option("--stats", "-st", is_flag=True, help=STATS_HELP)
+def main(folder, module, status, error, out, walk, full_print, csv, stats):
     r"""REVRUNS - Check Logs.
 
     Check log files of a reV run directory. Assumes certain standard
@@ -769,16 +888,22 @@ def main(folder, module, status, error, out, walk, full_print, csv):
     "rep-profiles": "config_rep-profiles.json" \n
     "qaqc": "config_qaqc.json" \n
     """
-    rrlogs = RRLogs(folder, module, status, error, out, walk, full_print, csv)
+    rrlogs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
+                    stats)
     rrlogs.main()
 
 
 if __name__ == "__main__":
-    folder = "/projects/rev/projects/ffi/fy23/rev/generation/1_n_4800kw_133m_dia_120m_hub"
+    folder = "/projects/rev/projects/hfto/fy23/rev/atb/wind_onshore_utility/"
+    sub_folder = folder
     error = None
-    out = 0
-    walk = False
+    out = None
+    walk = True
     module = None
     status = None
     full_print = True
     csv = False
+    stats = True
+    self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
+                  stats)
+    self.main()
