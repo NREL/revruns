@@ -36,7 +36,7 @@ def get_requirements():
     gdal_line = [req for req in reqs if req.startswith("pygdal")][0]
     gdal_line = gdal_line[:-1]
     reqs = [req for req in reqs if not req.startswith("pygdal")]
-    gdal_line = f"{gdal_line}=={gdal_version}.0\n"  # How to infer latest?
+    gdal_line = f"{gdal_line}=={gdal_version}.*\n"
     reqs.append(gdal_line)
     return reqs
 
