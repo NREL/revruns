@@ -167,7 +167,7 @@ class ATB:
 
         # Calculate multipliers
         base = cdf["value"][cdf["core_metric_variable"] == baseline_year]
-        base = float(base)
+        base = base.iloc[0]
         cdf["mult"] = cdf["value"] / base
 
         # Return as simplified object

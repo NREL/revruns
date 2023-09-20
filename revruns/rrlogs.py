@@ -11,8 +11,9 @@ import copy
 import datetime as dt
 import json
 import os
-import time
 import warnings
+
+from pandarallel import pandarallel
 
 from glob import glob
 from pathlib import Path
@@ -30,6 +31,7 @@ try:
 except ImportError:
     from pandas.core.common import SettingWithCopyWarning
 
+pandarallel.initialize(progress_bar=False, verbose=0)
 warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
 
 
@@ -693,6 +695,7 @@ class RRLogs(No_Pipeline):
     def _add_stats(self, mdf):
         """Add stats to a module status data frame."""
         # Only return for existing files (i.e., not incomplete or chunk_files)
+        mdf["out_file"][pd.isnull(mdf["out_file"])] = "NaN"
         mdf["exists"] = mdf["out_file"].apply(os.path.exists)
         mdf = mdf[mdf["exists"]]
 
@@ -700,7 +703,7 @@ class RRLogs(No_Pipeline):
         if mdf.shape[0] > 0:
             fpaths = mdf["out_file"]
             out = fpaths.apply(self._add_stat)
-            mdf["fname"] = mdf["out_file"].apply(lambda x: os.path.basename(x))
+            mdf["fname"] = mdf["out_file"].parallel_apply(lambda x: os.path.basename(x))
             mdf = mdf[["job_id", "fname"]]
             mdf = mdf.join(out)
 
@@ -894,8 +897,8 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats):
 
 
 if __name__ == "__main__":
-    folder = "/projects/rev/projects/hfto/fy23/rev/atb/wind_onshore_utility/"
-    sub_folder = folder
+    folder = "/projects/rev/projects/hfto/fy23/rev/atb/pv_utility/generation/"
+    sub_folder = folder + "pv_utility_advanced_2030/"
     error = None
     out = None
     walk = True

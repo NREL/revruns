@@ -34,7 +34,6 @@ revruns.egg-info/PKG-INFO
 revruns.egg-info/SOURCES.txt
 revruns.egg-info/dependency_links.txt
 revruns.egg-info/entry_points.txt
-revruns.egg-info/requires.txt
 revruns.egg-info/top_level.txt
 revruns/data/input_guide.txt
 revruns/data/rev_inputs.xlsx
