@@ -20,7 +20,6 @@ from revruns.rrlogs import RRLogs
 from rex.utilities.execution import SubprocessManager
 
 
-
 DIR_HELP = ("The directory containing one or more config_pipeline.json "
             "files. Defaults to current directory. (str)")
 WALK_HELP = ("Walk the directory structure and run all config_pipeline.json "
@@ -117,7 +116,7 @@ def rrpipeline(dirpath, walk, file, print_paths):
 
 
 if __name__ == "__main__":
-    dirpath = "/shared-projects/rev/projects/seto/fy23/climate_scenarios/rev/aggregation/00_solar_nlcd2019_ecearth32050"
-    walk = False
+    dirpath = "/projects/rev/projects/hfto/fy23/rev/hydrogen/rate/170_wind_baseline_limited_2022"
+    walk = True
     file = "config_pipeline.json"
-    print_paths = False
+    print_paths = True

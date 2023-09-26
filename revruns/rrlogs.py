@@ -482,6 +482,7 @@ class RRLogs(No_Pipeline):
         try:
             files = list(sub_folder.glob("*.json"))
             file = [f for f in files if "_status.json" in f.name][0]
+            job_files = list(sub_folder.glob("jobstatus*.json"))
         except IndexError:
             outdir = self.find_outputs(str(sub_folder))
             if outdir:
@@ -498,6 +499,22 @@ class RRLogs(No_Pipeline):
                 status = json.load(f)
             except json.decoder.JSONDecodeError:
                 status = "Updating"
+
+        # Update entries left over in job status files
+        if job_files:
+            for jfile in job_files:
+                with open(jfile, "r") as f:
+                    try:
+                        jstatus = json.load(f)
+                    except json.decoder.JSONDecodeError:
+                        pass
+                jmodule = next(iter(jstatus))
+                jname = next(iter(jstatus[jmodule]))
+                if jmodule in status:
+                    if jname in status[jmodule]:
+                        jstatus[jmodule][jname]["time_submitted"] = \
+                            status[jmodule][jname]["time_submitted"] 
+                        status[jmodule][jname] = jstatus[jmodule][jname]
 
         # Fix artifacts
         if isinstance(status, dict):
@@ -703,7 +720,9 @@ class RRLogs(No_Pipeline):
         if mdf.shape[0] > 0:
             fpaths = mdf["out_file"]
             out = fpaths.apply(self._add_stat)
-            mdf["fname"] = mdf["out_file"].parallel_apply(lambda x: os.path.basename(x))
+            mdf["fname"] = mdf["out_file"].parallel_apply(
+                lambda x: os.path.basename(x)
+            )
             mdf = mdf[["job_id", "fname"]]
             mdf = mdf.join(out)
 
@@ -819,9 +838,7 @@ class RRLogs(No_Pipeline):
         df["job_status"] = df["job_status"].apply(color_string)
         pdf = tabulate(df, showindex=False, headers=df.columns,
                        tablefmt="simple")
-        if logdir:
-            print("  logs: " + logdir + Style.RESET_ALL + "\n")
-        else:
+        if not logdir:
             msg = "Could not find log directory."
             print(Fore.YELLOW + msg + Style.RESET_ALL)
         print(f"{name}\n{pdf}")
@@ -897,16 +914,16 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats):
 
 
 if __name__ == "__main__":
-    folder = "/projects/rev/projects/hfto/fy23/rev/atb/pv_utility/generation/"
-    sub_folder = folder + "pv_utility_advanced_2030/"
+    folder = "/projects/rev/projects/hfto/fy23/rev/hydrogen/rate/186_wind_breakthrough_limited_2025/186_wind_breakthrough_limited_2025_esr01"
+    sub_folder = folder
     error = None
     out = None
-    walk = True
+    walk = None
     module = None
     status = None
     full_print = True
     csv = False
-    stats = True
+    stats = False
     self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
                   stats)
     self.main()

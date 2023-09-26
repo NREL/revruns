@@ -13,7 +13,6 @@ import json
 import multiprocessing as mp
 import os
 import warnings
-        
 
 from glob import glob
 from json import JSONDecodeError
