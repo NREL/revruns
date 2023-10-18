@@ -927,10 +927,10 @@ class Financing:
         crf = wacc * (1 / (1 - (1 / (1 + wacc) ** lifetime)))
 
         # Project finance factor
-        profinfactor = (1 - self.tr * pvd) / (1 - self.tr)
+        pff = (1 - self.tr * pvd) / (1 - self.tr)
 
         # Fixed charge rate
-        fcr = crf * profinfactor
+        fcr = crf * pff
 
         return fcr
 

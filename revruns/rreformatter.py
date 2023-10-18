@@ -807,6 +807,7 @@ class Reformatter(Exclusions):
         dsts = []
         print(f"Formatting {len(self.vectors)} vectors...")
         for name, attrs in tqdm(self.vectors.items()):
+
             # Unpack attributes
             path = attrs["path"]
             if "field" in attrs:
@@ -819,7 +820,7 @@ class Reformatter(Exclusions):
             else:
                 buffer = None
 
-            # Create dst path
+            # Create destination path
             dst = os.path.join(self.out_dir, f"{name}.tif")
             dsts.append(dst)
 

@@ -1098,7 +1098,6 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     if dtype is None:
         band = source.GetRasterBand(1)
         dtype = band.DataType
-
     if isinstance(dtype, str):
         dtype = dtype.lower().replace("gdt_", "")
         try:
