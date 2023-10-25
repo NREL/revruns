@@ -2,7 +2,7 @@
 """Reformat a shapefile or raster into a reV raster using a template.
 
 Note that rasterize partial was adjusted from:
-    https://gist.github.com/perrygeohttps://gist.github.com/perrygeo
+    https://gist.github.com/perrygeo
 
 @date: Tue Apr 27 16:47:10 2021
 @author: twillia2
@@ -434,9 +434,10 @@ class Exclusions:
                 hdf[dname].attrs["profile"] = json.dumps(profile)
                 if description:
                     hdf[dname].attrs["description"] = description
-                if dname in self.lookup:
-                    string_value = json.dumps(self.lookup[dname])
-                    hdf[dname].attrs["lookup"] = string_value
+
+            if dname in self.lookup:
+                string_value = json.dumps(self.lookup[dname])
+                hdf[dname].attrs["lookup"] = string_value
 
     def add_layers(self, file_dict, desc_dict=None, overwrite=False):
         """Add multiple raster files and their descriptions."""
@@ -848,9 +849,9 @@ class Reformatter(Exclusions):
         if self.overwrite_tif and os.path.exists(dst):
             os.remove(dst)
 
+        # Read and process file
+        gdf = self._process_vector(name, path, field, buffer)
         if not os.path.exists(dst):
-            # Read and process file
-            gdf = self._process_vector(name, path, field, buffer)
             meta = self.meta
 
             # Rasterize
