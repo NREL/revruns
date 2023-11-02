@@ -17,7 +17,6 @@ import warnings
 from glob import glob
 from json import JSONDecodeError
 
-import geopandas as gpd
 import h5py
 import numpy as np
 import pandas as pd
@@ -29,6 +28,9 @@ from shapely.errors import ShapelyDeprecationWarning
 from shapely.geometry import Point
 from tqdm import tqdm
 
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning)
+    import geopandas as gpd
 
 pd.set_option("display.max_columns", 500)
 pd.set_option("display.max_rows", 20)
@@ -961,10 +963,3 @@ class Financing:
         term2 = (self.df * ((1 + self.ir) * (1 + self.i) - 1) * (1 - self.tr))
         wacc = ((term1 + term2) / (1 + self.i)) - 1
         return wacc
-
-
-if __name__ == "__main__":
-    # Attempting to match ATB 2022
-    self = Financing()
-    lifetime = 25
-    print(self.fcr(lifetime))
