@@ -949,10 +949,10 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '/scratch/twillia2/test_run'
+    folder = '.'
     sub_folder = folder
     error = None
-    out = "0"
+    out = None
     walk = False
     module = None
     status = None

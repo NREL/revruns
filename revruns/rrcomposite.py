@@ -54,10 +54,11 @@ def composite(config, dst=None):
     _composite(excl_dict, excl_fpath, dst)
 
 
-def _composite(excl_dict, excl_fpath, dst):
+def _composite(excl_dict, excl_fpath, dst, min_area=None):
     """Use an exclusion dictionary, hdf5 fpath, and destination path."""
     # Run reV to merge
-    masker = ExclusionMaskFromDict(excl_fpath, layers_dict=excl_dict)
+    masker = ExclusionMaskFromDict(excl_fpath, layers_dict=excl_dict,
+                                   min_area=min_area)
     mask = masker.mask
     mask = mask.astype("uint8")
 
@@ -90,5 +91,4 @@ def main(config, dst):
 
 
 if __name__ == "__main__":
-    config = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/rev/generic_wind/config_aggregation.json"
-    dst = "/vast/shared-projects/rev/projects/lithuania/fy23/lithuania100/rev/generic_wind/sample_inclusion_layer.tif"
+    pass

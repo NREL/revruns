@@ -637,6 +637,11 @@ class PandasExtension:
                     except ValueError:
                         pass
 
+                    # Convert possible string coordinate fields
+                    for field in [lat, lon]:
+                        if df[field].dtype == "O":
+                            df[field] = df[field].astype(float)
+
                     # For a single row
                     def to_point(x):
                         return Point(x.values)

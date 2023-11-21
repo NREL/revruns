@@ -6,7 +6,6 @@ Cython==0.29.34
 dask>=2.8
 dask[array]>=2.8
 fiona>=1.9.0
-pygdal
 geopandas>=0.8
 h5py>=2.10.0,!=3.0.0
 h5pyd>=0.7.0

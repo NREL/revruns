@@ -33,10 +33,7 @@ def get_requirements():
     with open("requirements.txt", encoding="utf-8") as file:
         reqs = file.readlines()
     gdal_version = get_gdal_version()
-    gdal_line = [req for req in reqs if req.startswith("pygdal")][0]
-    gdal_line = gdal_line[:-1]
-    reqs = [req for req in reqs if not req.startswith("pygdal")]
-    gdal_line = f"{gdal_line}=={gdal_version}.*\n"
+    gdal_line = f"gdal=={gdal_version}.*\n"
     reqs.append(gdal_line)
     return reqs
 

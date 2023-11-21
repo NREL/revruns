@@ -44,4 +44,4 @@ Requires-Dist: toml>=0.10.0
 Requires-Dist: toolz>=0.7.3
 Requires-Dist: tqdm==4.65.0
 Requires-Dist: xlrd==2.0.1
-Requires-Dist: pygdal==3.3.0.*
+Requires-Dist: gdal==3.7.2.*

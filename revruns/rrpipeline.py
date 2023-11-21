@@ -13,11 +13,11 @@ import subprocess as sp
 
 from pathlib import Path
 
-import reV
-
 from colorama import Fore, Style
-from revruns.rrlogs import RRLogs
 from rex.utilities.execution import SubprocessManager
+
+from revruns.rrlogs import RRLogs
+from revruns import REV_VERSION
 
 
 DIR_HELP = ("The directory containing one or more config_pipeline.json "
@@ -95,22 +95,24 @@ def rrpipeline(dirpath, walk, file, print_paths):
             if not successful:
                 print(Fore.CYAN + "Submitting " + rpath + "..."
                       + Style.RESET_ALL)
-                if reV.__version__ < "0.8.0":
-                    cmd = (f"nohup reV -c {path} pipeline --monitor")
+                if REV_VERSION < "0.8.0":
+                    cmd = f"nohup reV -c {path} pipeline --monitor"
                 else:
-                    cmd = (f"nohup reV pipeline -c {path} --monitor")
+                    cmd = f"nohup reV pipeline -c {path} --monitor"
                 cmd = shlex.split(cmd)
                 output = os.path.join(os.path.dirname(path), "pipeline.out")
-                process = sp.Popen(
+                with sp.Popen(
                     cmd,
                     stdout=open(output, "w"),
                     stderr=open(output, "w"),
                     preexec_fn=os.setpgrp
-                )
-                if process.returncode == 1:
-                    raise OSError("Submission failed: check {}".format(output))
-                SubprocessManager.submit(cmd, background=True,
-                                         background_stdout=False)
+                ) as process:
+                    if process.returncode == 1:
+                        raise OSError(
+                            "Submission failed: check {}".format(output)
+                        )
+                    SubprocessManager.submit(cmd, background=True,
+                                            background_stdout=False)
 
     return config_paths
 
