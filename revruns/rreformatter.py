@@ -373,7 +373,7 @@ class Rasterizer:
 
 
 class Exclusions:
-    """Build or add to an HDF5 Exclusions dataset."""
+    """Build or add to an HDF5 Exclusions file."""
 
     def __init__(self, excl_fpath, attrs=None, lookup={}, parallel=True):
         """Initialize Exclusions object.
