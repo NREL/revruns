@@ -96,16 +96,16 @@ def rrpipeline(dirpath, walk, file, print_paths):
                 print(Fore.CYAN + "Submitting " + rpath + "..."
                       + Style.RESET_ALL)
                 if REV_VERSION < "0.8.0":
-                    cmd = f"nohup reV -c {path} pipeline --monitor"
+                    cmd = f"reV -c {path} pipeline --monitor --background"
                 else:
-                    cmd = f"nohup reV pipeline -c {path} --monitor"
+                    cmd = f"reV pipeline -c {path} --monitor --background"
                 cmd = shlex.split(cmd)
                 output = os.path.join(os.path.dirname(path), "pipeline.out")
                 with sp.Popen(
                     cmd,
-                    stdout=open(output, "w"),
-                    stderr=open(output, "w"),
-                    preexec_fn=os.setpgrp
+                    stdout=open(output, "w", encoding="utf-8"),
+                    stderr=open(output, "w", encoding="utf-8")
+                    # preexec_fn=os.setpgrp
                 ) as process:
                     if process.returncode == 1:
                         raise OSError(
@@ -115,10 +115,3 @@ def rrpipeline(dirpath, walk, file, print_paths):
                                             background_stdout=False)
 
     return config_paths
-
-
-if __name__ == "__main__":
-    dirpath = "/projects/rev/projects/hfto/fy23/rev/hydrogen/rate/170_wind_baseline_limited_2022"
-    walk = True
-    file = "config_pipeline.json"
-    print_paths = True

@@ -32,10 +32,18 @@ from click.testing import CliRunner
 from reV.cli import main as base_cli
 
 
+HELP = {
+    "module": ("The reV module to build a debug python script for. Currently "
+               "only 'pipeline' is available. (str)"),
+    "n": ("The number of project points to use in the sample run. Defaults to "
+          " 10. (int)"),
+}
+
+
 class RRDebug:
     """Methods for setting up and debugging sample reV runs from a CLI."""
 
-    def __init__(self, module="pipeline", rundir="."):
+    def __init__(self, module="pipeline", rundir=".", n_points=10):
         """Initialize RRDebug object.
         
         Parameters
@@ -46,6 +54,7 @@ class RRDebug:
         """
         self.rundir = Path(rundir).absolute().expanduser()
         self.module = module
+        self.n_points = int(n_points)
         self._setup()
 
     def __repr__(self):
@@ -59,7 +68,7 @@ class RRDebug:
         """Adjust inputs, subset project points."""
         # Get the main config used for module
         path = self.rundir.joinpath(f"config_{self.module}.json")
-        main_config = json.load(open(path))
+        main_config = json.load(open(path, encoding="utf-8"))
 
         # If the config file is a pipeline, adjust each config in pipeline
         if self.module == "pipeline":
@@ -69,7 +78,7 @@ class RRDebug:
                 module = list(entry)[0]
                 path = list(entry.values())[0]
                 new_pipeline.append({module: f"./config_{module}.json"})
-                config = json.load(open(path))
+                config = json.load(open(path, encoding="utf-8"))
                 self.copy_config(config, module)
             main_config["pipeline"] = new_pipeline
 
@@ -84,6 +93,12 @@ class RRDebug:
                 if value.startswith("./"):
                     path = str(self.rundir.joinpath(value))
                     config[key] = path
+            elif key == "sam_files":
+                new_files = {}
+                for code, path in value.items():
+                    path = str(Path(path).absolute())
+                    new_files[code] = path
+                config[key] = new_files
 
         # Configure to run locally
         if "execution_control" in config:
@@ -103,7 +118,7 @@ class RRDebug:
             pdst = self.dbg_dir.joinpath("project_points_sample.csv")
             config["project_points"] = str(pdst)
             if not pdst.exists():
-                pp = pd.read_csv(ppath, nrows=25)
+                pp = pd.read_csv(ppath, nrows=self.n_points)
                 pp.to_csv(pdst, index=False)
 
         # Write to debug dir
@@ -249,11 +264,17 @@ class RRDebug:
 
 @click.command()
 @click.argument("directory", default=".")
-def main(directory):
+@click.option("--n_points", "-n", default=None, help=HELP["n"])
+def main(directory, n_points):
     """RRDebug - Create debugging files.
     
     Creates a debug directory with sample data and a python script that
     recreates a cli command.
     """
-    rrdb = RRDebug(rundir=directory)
+    rrdb = RRDebug(rundir=directory, n_points=n_points)
     rrdb.main()
+
+
+if __name__ == "__main__":
+    directory = "/projects/rev/projects/ffi/fy24/rev/solar/test"
+    self = RRDebug(rundir=directory)
