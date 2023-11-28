@@ -352,7 +352,7 @@ class RRLogs(No_Pipeline):
                 if not outdir:
                     # The file might not open
                     try:
-                        config = json.load(open(file, "r"))
+                        config = json.load(open(file, "r", encoding="utf-8"))
                     except:
                         pass
 
@@ -500,7 +500,7 @@ class RRLogs(No_Pipeline):
                 return None, None
 
         # Get the status dictionary
-        with open(file, "r") as f:
+        with open(file, "r", encoding="utf-8") as f:
             try:
                 status = json.load(f)
             except json.decoder.JSONDecodeError:
@@ -509,7 +509,7 @@ class RRLogs(No_Pipeline):
         # Update entries left over in job status files
         if job_files:
             for jfile in job_files:
-                with open(jfile, "r") as f:
+                with open(jfile, "r", encoding="utf-8") as f:
                     try:
                         jstatus = json.load(f)
                     except json.decoder.JSONDecodeError:
@@ -518,11 +518,13 @@ class RRLogs(No_Pipeline):
                 jname = next(iter(jstatus[jmodule]))
                 if jmodule in status:
                     if jname in status[jmodule]:
-                        job_id = status[jmodule][jname]["job_id"]
+                        if "job_id" not in status[jmodule][jname]:
+                            job_id = "NA"
+                        else:
+                            job_id = status[jmodule][jname]["job_id"]
                         jstatus[jmodule][jname]["time_submitted"] = \
                             status[jmodule][jname]["time_submitted"]
-                        jstatus[jmodule][jname]["job_id"] = \
-                            status[jmodule][jname]["job_id"]
+                        jstatus[jmodule][jname]["job_id"] = job_id
                         status[jmodule][jname] = jstatus[jmodule][jname]
 
         # Fix artifacts
@@ -949,17 +951,18 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '.'
+    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test/'
     sub_folder = folder
     error = None
-    out = None
+    out = "0"
     walk = False
     module = None
     status = None
     full_print = True
     csv = False
     stats = False
-    verbose = True
+    verbose = False
+    field = None
     self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
                   stats)
     self.main()
