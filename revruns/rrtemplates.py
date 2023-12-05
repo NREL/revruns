@@ -76,17 +76,16 @@ MODULE_NAMES = {
 }
 
 DEFAULT_PATHS = {
-    "gen": "./config_generation.json",
-    "bsp": "./config_bespoke.json",
-    "co": "./config_collect.json",
-    "my": "./config_multi-year.json",
-    "ag": "./config_aggregation.json",
-    "sc": "./config_supply-curve.json",
-    "rp": "./config_rep-profiles.json",
-    "ba": "./config_batch.json",
-    "pi": "./config_pipeline.json",
+    "generation": "./config_generation.json",
+    "bespoke": "./config_bespoke.json",
+    "collect": "./config_collect.json",
+    "multi-yeary": "./config_multi-year.json",
+    "supply-curve-aggregation": "./config_aggregation.json",
+    "supply-curve": "./config_supply-curve.json",
+    "rep-profiles": "./config_rep-profiles.json",
+    "batch": "./config_batch.json",
+    "pipeline": "./config_pipeline.json",
     "points": "./project_points/project_points.csv",
-    "pipe": "./config_pipeline.json",
     "sam": "./sam_configs/sam.json",
     "slurm": "./submit.sh" 
 }
@@ -197,4 +196,12 @@ def main(generation, bespoke, collect, multiyear, aggregation, supplycurve,
 
 
 if __name__ == "__main__":
-    main()
+    generation = False
+    bespoke = False
+    collect = True
+    multiyear = False
+    aggregation = False
+    supplycurve = False
+    repprofiles = False
+    batch = False
+    output_dir = "/projects/rev/projects/ffi/fy24/rev/solar/test"
