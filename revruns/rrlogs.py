@@ -62,6 +62,7 @@ STATS_HELP = ("Print summary statistics instead of status information. Only "
 FIELD_HELP = ("Field in dataset to use if request stat summary (defaults to"
               "mean_cf).")
 AU_HELP = ("Count AUs used for requested runs. (boolean)")
+VERBOSE_HELP = ("Print status data to console. (boolean)")
 
 CONFIG_DICT = {
     "gen": "config_gen.json",
@@ -165,7 +166,8 @@ class RRLogs(No_Pipeline):
 
     def __init__(self, folder=".", module=None, status=None, error=None,
                  out=None, walk=False, full_print=False, csv=False,
-                 stats=False, field="mean_cf", count_aus=False):
+                 stats=False, field="mean_cf", count_aus=False,
+                 verbose=True):
         """Initialize an RRLogs object."""
         self.folder = os.path.expanduser(os.path.abspath(folder))
         self.module = module
@@ -178,11 +180,140 @@ class RRLogs(No_Pipeline):
         self.stats = stats
         self.field = field
         self.count_aus = count_aus
+        self.verbose = verbose
 
     def __repr__(self):
         """Return RRLogs object representation string."""
         attrs = ", ".join(f"{k}={v}" for k, v in self.__dict__.items())
         return f"<RRLogs object: {attrs}>"
+
+    def build_dataframe(self, sub_folder, module=None):
+        """Convert a status entry into dataframe."""
+        # Get the status dictionary
+        _, status = self.find_status(sub_folder)
+
+        # If the status is actively being updated skip this
+        if status == "updating":
+            return status
+
+        # There might be a log file with no status data frame
+        elif isinstance(status, dict):
+            # If just one module
+            if module:
+                df = self.build_module_dataframe(status, module)
+                if df is None:
+                    msg = f"{module} not found in status file.\n"
+                    print(Fore.RED + msg + Style.RESET_ALL)
+                    return
+
+            # Else, create a single data frame with everything
+            else:
+                modules = status.keys()
+                names_modules = {v: k for k, v in MODULE_NAMES.items()}
+                dfs = []
+                for module_name in modules:
+                    module = names_modules[module_name]
+                    try:
+                        mstatus = self.build_module_dataframe(status, module)
+                    except KeyError:
+                        print(f"{module} not found in status file.")
+                        raise
+                    if mstatus is not None:
+                        dfs.append(mstatus)
+                if not dfs:
+                    return
+                df = pd.concat(dfs, sort=False)
+
+            # Here, let's improve the time estimation somehow
+            if "runtime" not in df.columns and not self.stats:
+                df["runtime"] = "nan"
+
+            # And refine this down for the printout
+            if not self.stats:
+                df["job_name"] = df.index
+                df = df.reset_index(drop=True)
+                if "job_id" in df:
+                    df = self.check_index(df, sub_folder)
+                cols = [col for col in PRINT_COLUMNS if col in df]
+                df = df[cols]
+                df["runtime"] = df["runtime"].apply(safe_round, n=2)
+
+            return df
+        else:
+            return None
+
+    def build_module_dataframe(self, status, module="gen"):
+        """Convert the status entry for a module to a dataframe."""
+        # Get the module entry
+        cstatus = copy.deepcopy(status)
+        mkey = MODULE_NAMES[module]
+        if mkey in cstatus:
+            mstatus = cstatus[mkey]
+        else:
+            return None
+
+        # This might be empty
+        if not mstatus:
+            return None
+
+        # The first entry is the pipeline index
+        if "pipeline_index" in mstatus:
+            mindex = mstatus.pop("pipeline_index")
+        else:
+            mindex = 0
+
+        # If the job was submitted but didn't get a job id
+        if len(mstatus) == 1:
+            job = mstatus[next(iter(mstatus))]
+            if "job_id" not in job:
+                job["job_id"] = 0
+                mstatus[next(iter(mstatus))] = job
+
+        # Create data frame
+        mdf = pd.DataFrame(mstatus).T
+        mdf["pipeline_index"] = mindex
+
+        # If incomplete:
+        if not mstatus:
+            for col in mdf.columns:
+                if col == "job_status":
+                    mstatus[col] = "unsubmitted"
+                else:
+                    mstatus[col] = None
+            mstatus = {mkey: mstatus}
+
+        # If stats, add summary stat fields
+        if self.stats:
+            if "out_file" in mdf:
+                mdf = self._add_stats(mdf)
+            else:
+                mdf = None
+
+        # Otherwise, format the run status fields
+        else:
+            if "out_fpath" not in mdf and "dirout" not in mdf:
+                mdf["file"] = None
+            else:
+                if "out_fpath" not in mdf:
+                    mdf["file"] = mdf.apply(self.join_fpath, axis=1)
+                else:
+                    mdf["file"] = mdf["out_fpath"]
+
+            # Add date
+            if "time_end" not in mdf:
+                mdf["date"] = mdf["time_start"]
+                # mdf["date"] = mdf["file"].apply(self.find_date)
+            else:
+                mdf["date_submitted"] = mdf["time_submitted"]
+                mdf["date_completed"] = mdf["time_end"]
+
+            if "finput" not in mdf:
+                mdf["finput"] = mdf["file"]
+
+            if "runtime" not in mdf:
+                mdf["runtime"] = "na"
+
+        return mdf
 
     def check_entries(self, print_df, check):
         """Check for a specific status."""
@@ -394,61 +525,62 @@ class RRLogs(No_Pipeline):
 
         return pid_dirs
 
-    def infer_runtime(self, job):
+    def infer_runtime(self, job, file):
         """Infer the runtime for a specific job (dictionary entry)."""
-        if "fout" not in job:
-            return "NA"
+        # Find the run directory
+        if "dirout" not in job:
+            if ".gaps" in str(file):
+                dirout = file.parent.parent
+            else:
+                dirout = file.parent
+        else:
+            dirout = job["dirout"]
 
-        dirout = job["dirout"]
-        fout = job["fout"]
-
-        # We will be looking for the logs files associated with fout
-        if "_node" in fout:
-            fout = fout.replace("node", "")
-        jobname = fout.replace(".h5", "")
-
-        # Find all the output logs for this jobname
+        # Find all the output logs for this job id
+        jobid = job["job_id"]
         logdir = self.find_logs(dirout)
         if logdir:
             stdout = os.path.join(logdir, "stdout")
-            logs = glob(os.path.join(stdout, "*{}*.o".format(jobname)))
-
-            # Take the last, will also work if there were multiple attempts
-            logpath = logs[-1]
+            logpath = glob(os.path.join(stdout, "*{}*.o".format(jobid)))[0]
 
             # We can't get file creation in Linux
-            with open(logpath, "r") as file:
+            with open(logpath, "r", encoding="utf-8") as file:
                 lines = [line.replace("\n", "") for line in file.readlines()]
+
+            time_lines = []
             for line in lines:
-                if "INFO" in line or "DEBUG" in line:
-                    date = line.split()[2]
-                    time = line.split()[3][:8]
-                    break
+                if line.startswith(("INFO", "DEBUG", "ERROR", "WARNING")):
+                    time_lines.append(line)
+            date1 = time_lines[0].split()[2]
+            date2 = time_lines[-1].split()[2]
+            time1 = time_lines[0].split()[3][:8]
+            time2 = time_lines[-1].split()[3][:8]
 
             # There might not be any values here
             try:
-                time_string = " ".join([date, time])
+                time_string1 = " ".join([date1, time1])
+                time_string2 = " ".join([date2, time2])
             except NameError:
-                return "NA"
+                return "N/A"
 
-            # Format the start time from these
-            stime = dt.datetime.strptime(time_string, "%Y-%m-%d %H:%M:%S")
-
-            # Get the modification time from the file stats
-            fstats = os.stat(logpath)
-            etime = dt.datetime.fromtimestamp(fstats.st_mtime)
+            # Format these time strings into datetime objects
+            dtime1 = dt.datetime.strptime(time_string1, "%Y-%m-%d %H:%M:%S")
+            dtime2 = dt.datetime.strptime(time_string2, "%Y-%m-%d %H:%M:%S")
 
             # Take the difference
-            minutes = round((etime - stime).seconds / 60, 3)
+            minutes = round((dtime2 - dtime1).seconds / 60, 3)
         else:
-            minutes = "NA"
+            minutes = "N/A"
 
         return minutes
 
     def find_runtimes(self, status, file):
         """Find runtimes if missing from the main status json."""
+        # Remove monitor pid
         if "monitor_pid" in status:
             _ = status.pop("monitor_pid")
+
+        # For each entry, try to find or infer runtimes
         for module, entry in status.items():
             for label, job in entry.items():
                 if isinstance(job, dict):
@@ -457,7 +589,7 @@ class RRLogs(No_Pipeline):
                             if "total_runtime" in job:
                                 job["runtime"] = job["total_runtime"]
                             else:
-                                job["runtime"] = "N/A"
+                                job["runtime"] = self.infer_runtime(job, file)
                             status[module][label] = job
         return status
 
@@ -564,168 +696,21 @@ class RRLogs(No_Pipeline):
             fpath = "NA"
         return fpath
 
-    def module_status_dataframe(self, status, module="gen"):
-        """Convert the status entry for a module to a dataframe."""
-        # Copy status dictionary
-        cstatus = copy.deepcopy(status)
-
-        # Get the module key
-        mkey = MODULE_NAMES[module]
-
-        # Get the module entry
-        if mkey in cstatus:
-            mstatus = cstatus[mkey]
+    @property
+    def status_df(self):
+        """Return full dataframe of status entries."""
+        # Build data frame for one or more jobs
+        if len(self.folders) > 1:
+            df = self._run_parallel()
         else:
-            return None
-
-        # This might be empty
-        if not mstatus:
-            return None
-
-        # The first entry is the pipeline index
-        if "pipeline_index" in mstatus:
-            mindex = mstatus.pop("pipeline_index")
-        else:
-            mindex = 0
-
-        # If the job was submitted but didn't get a job id
-        if len(mstatus) == 1:
-            job = mstatus[next(iter(mstatus))]
-            if "job_id" not in job:
-                job["job_id"] = 0
-                mstatus[next(iter(mstatus))] = job
-
-        # Create data frame
-        mdf = pd.DataFrame(mstatus).T
-        mdf["pipeline_index"] = mindex
-
-        # If incomplete:
-        if not mstatus:
-            for col in mdf.columns:
-                if col == "job_status":
-                    mstatus[col] = "unsubmitted"
-                else:
-                    mstatus[col] = None
-            mstatus = {mkey: mstatus}
-
-        # If stats, add summary stat fields
-        if self.stats:
-            if "out_file" in mdf:
-                mdf = self._add_stats(mdf)
-            else:
-                mdf = None
-
-        # Otherwise, format the run status fields
-        else:
-            if "out_fpath" not in mdf and "dirout" not in mdf:
-                mdf["file"] = None
-            else:
-                if "out_fpath" not in mdf:
-                    mdf["file"] = mdf.apply(self.join_fpath, axis=1)
-                else:
-                    mdf["file"] = mdf["out_fpath"]
-
-            # Add date
-            if "time_end" not in mdf:
-                mdf["date"] = mdf["file"].apply(self.find_date)
-            else:
-                mdf["date_submitted"] = mdf["time_submitted"]
-                mdf["date_completed"] = mdf["time_end"]
-
-            if "finput" not in mdf:
-                mdf["finput"] = mdf["file"]
-
-            if "runtime" not in mdf:
-                mdf["runtime"] = "na"
-
-        return mdf
+            df = self._run_single()
+        return df
 
     @property
     def successful(self):
         """Quick check if all runs in run directory were successful."""
-        df = self.statuses(verbose=False)
+        df = self.status_df
         return all(df["job_status"] == "successful")
-
-    def statuses(self, verbose=False):
-        """Return full dataframe of status entries."""
-        # Build data frame for one or more jobs
-        if len(self.folders) > 1:
-            dfs = []
-            args = []
-            for sub_folder in self.folders:
-                arg = (self.folder, sub_folder, self.module, self.status,
-                       self.error, self.out, verbose)
-                args.append(arg)
-            with mp.Pool(mp.cpu_count() - 1) as pool:
-                for out in pool.imap(self._run, args):
-                    dfs.append(out)
-            df = pd.concat(dfs)
-            df = df.dropna(axis=1, how="all")
-        else:
-            args = (self.folder, self.folders[0], self.module, self.status,
-                    self.error, self.out, verbose)
-            df = self._run(args)
-
-        # Add runtime in hours
-        df["runtime_hrs"] = df["runtime"].apply(self._to_hours)
-
-        return df
-
-    def status_dataframe(self, sub_folder, module=None):
-        """Convert a status entr into dataframe."""
-        # Get the status dictionary
-        _, status = self.find_status(sub_folder)
-
-        # If the status is actively being updated skip this
-        if status == "updating":
-            return status
-
-        # There might be a log file with no status data frame
-        elif isinstance(status, dict):
-            # If just one module
-            if module:
-                df = self.module_status_dataframe(status, module)
-                if df is None:
-                    msg = f"{module} not found in status file.\n"
-                    print(Fore.RED + msg + Style.RESET_ALL)
-                    return
-
-            # Else, create a single data frame with everything
-            else:
-                modules = status.keys()
-                names_modules = {v: k for k, v in MODULE_NAMES.items()}
-                dfs = []
-                for module_name in modules:
-                    module = names_modules[module_name]
-                    try:
-                        mstatus = self.module_status_dataframe(status, module)
-                    except KeyError:
-                        raise
-                    if mstatus is not None:
-                        dfs.append(mstatus)
-                if not dfs:
-                    return
-
-                df = pd.concat(dfs, sort=False)
-
-            # Here, let's improve the time estimation somehow
-            if "runtime" not in df.columns and not self.stats:
-                df["runtime"] = "nan"
-
-            # And refine this down for the printout
-            if not self.stats:
-                df["job_name"] = df.index
-                df = df.reset_index(drop=True)
-                df = df.reset_index()
-                if "job_id" in df:
-                    df = self.check_index(df, sub_folder)
-                cols = [col for col in PRINT_COLUMNS if col in df]
-                df = df[cols]
-                df["runtime"] = df["runtime"].apply(safe_round, n=2)
-
-            return df
-        else:
-            return None
 
     def to_csv(self, df):
         """Save the outputs to a CSV."""
@@ -788,21 +773,21 @@ class RRLogs(No_Pipeline):
         elif host.startswith("e"):
             rate = 3
             host = "eagle"
-        hours = df["runtime_hrs"].sum()
-        aus = hours * rate
+        minutes = df["runtime"].sum()
+        aus = (minutes / 60) * rate
         out = f"AUs ({host}, {rate}x) = {round(aus, 2):,}"
         print(out)
 
     def _run(self, args):
         """Print status and job pids for a single project directory."""
         # Unpack args
-        folder, sub_folder, module, status, error, out, verbose = args
+        folder, sub_folder, module, status, error, out = args
 
         # Expand folder path
         sub_folder = os.path.abspath(os.path.expanduser(sub_folder))
 
         # Convert module status to data frame
-        df = self.status_dataframe(sub_folder, module)
+        df = self.build_dataframe(sub_folder, module)
 
         if isinstance(df, str) and df == "updating":
             print(Fore.YELLOW + f"\nStatus file updating for {sub_folder}"
@@ -819,7 +804,7 @@ class RRLogs(No_Pipeline):
             if status:
                 df = self.check_entries(df, status)
 
-            if verbose:
+            if self.verbose:
                 if not error and not out and df.shape[0] > 0 and not self.stats:
                     if not self.csv:
                         print_folder = os.path.relpath(sub_folder, folder)
@@ -856,6 +841,31 @@ class RRLogs(No_Pipeline):
                         return
                     self.checkout(logdir, pid, output="stdout")
 
+        return df
+
+    def _run_parallel(self):
+        """Run if only multiple sub folders are present in main directory."""
+        args = []
+        for sub_folder in self.folders:
+            arg = (self.folder, sub_folder, self.module, self.status,
+                    self.error, self.out)
+            args.append(arg)
+
+        dfs = []
+        with mp.Pool(mp.cpu_count() - 1) as pool:
+            for out in pool.imap(self._run, args):
+                dfs.append(out)
+
+        df = pd.concat(dfs)
+        df = df.dropna(axis=1, how="all")
+
+        return df
+
+    def _run_single(self):
+        """Run if only one sub folder is present in main run directory."""
+        args = (self.folder, self.folders[0], self.module, self.status,
+                self.error, self.out)
+        df = self._run(args)
         return df
 
     def _stat_print(self, df, print_folder):
@@ -922,12 +932,11 @@ class RRLogs(No_Pipeline):
     def main(self):
         """Run the appropriate rrlogs functions for a folder."""
         # Turn off print states for certain flags
-        verbose = True
         if self.count_aus or self.csv:
-            verbose = False
+            self.verbose = False
 
         # Run rrlogs for each
-        df = self.statuses(verbose=verbose)
+        df = self.status_df
 
         # Count AUs
         if self.count_aus:
@@ -950,26 +959,27 @@ class RRLogs(No_Pipeline):
 @click.option("--stats", "-st", is_flag=True, help=STATS_HELP)
 @click.option("--field", "-fd", default=None, help=FIELD_HELP)
 @click.option("--count_aus", "-au", is_flag=True, help=AU_HELP)
+@click.option("--verbose", "-v", is_flag=True, help=VERBOSE_HELP)
 def main(folder, module, status, error, out, walk, full_print, csv, stats,
-         field, count_aus):
+         field, count_aus, verbose):
     r"""REVRUNS - Check Logs.
 
-    Check log files of a reV run directory. Assumes certain standard
-    naming conventions:
-
-    Configuration File names:\n
-    "gen": "config_gen.json" \n
-    "econ": "config_econ.json" \n
-    "offshore": "config_offshore.json" \n
-    "collect": "config_collect.json" \n
-    "multi-year": "config_multi-year.json" \n
-    "aggregation": "config_aggregation.son" \n
-    "supply-curve": "config_supply-curve.json" \n
-    "rep-profiles": "config_rep-profiles.json" \n
-    "qaqc": "config_qaqc.json" \n
+    Check log files of a reV run directory. Assumes reV run in pipeline.
     """
-    rrlogs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
-                    stats, field, count_aus)
+    rrlogs = RRLogs(
+        folder=folder,
+        module=module,
+        status=status,
+        error=error,
+        out=out,
+        walk=walk,
+        full_print=full_print,
+        csv=csv,
+        stats=stats,
+        field=field,
+        count_aus=count_aus,
+        verbose=verbose
+    )
     rrlogs.main()
 
 
@@ -987,6 +997,7 @@ if __name__ == "__main__":
     verbose = False
     field = None
     count_aus = False
+    verbose = True
     self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
-                  stats, count_aus=count_aus)
+                  stats, count_aus=count_aus, verbose=verbose)
     self.main()
