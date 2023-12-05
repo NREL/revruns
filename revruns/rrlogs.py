@@ -231,7 +231,8 @@ class RRLogs(No_Pipeline):
             # And refine this down for the printout
             if not self.stats:
                 df["job_name"] = df.index
-                df = df.reset_index(drop=True)
+                df = df.reset_index()
+                df["index"] = df.index
                 if "job_id" in df:
                     df = self.check_index(df, sub_folder)
                 cols = [col for col in PRINT_COLUMNS if col in df]
@@ -959,7 +960,7 @@ class RRLogs(No_Pipeline):
 @click.option("--stats", "-st", is_flag=True, help=STATS_HELP)
 @click.option("--field", "-fd", default=None, help=FIELD_HELP)
 @click.option("--count_aus", "-au", is_flag=True, help=AU_HELP)
-@click.option("--verbose", "-v", is_flag=True, help=VERBOSE_HELP)
+@click.option("--verbose", "-v", is_flag=True, default=True, help=VERBOSE_HELP)
 def main(folder, module, status, error, out, walk, full_print, csv, stats,
          field, count_aus, verbose):
     r"""REVRUNS - Check Logs.
