@@ -559,7 +559,7 @@ class PandasExtension:
             if isinstance(fields, str):
                 fields = [fields]
         else:
-            fields = [c for c in df if c not in [x2, y2, "geometry"]]
+            fields = [c for c in df2 if c not in [x2, y2, "geometry"]]
 
         # Get arrays of point coordinates
         crds1 = df1[[x1, y1]].values
@@ -569,7 +569,7 @@ class PandasExtension:
         tree = cKDTree(crds2)
         if no_repeat:
             dist, idx = tree.query(crds1, k=k)
-            dist, idx = self._derepeat(dist, idx)
+            # dist, idx = self._derepeat(dist, idx)  # Where did _derepeat go?
         else:
             dist, idx = tree.query(crds1, k=1)
 

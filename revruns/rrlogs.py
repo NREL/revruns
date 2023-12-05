@@ -4,8 +4,8 @@ TODO:
     - See if we can't use pyslurm to speed up the squeue call
 
     - This was made in a rush before I was fast enough to build properly. Also,
-       This is probably the most frequently used revrun cli, so this should
-       definitely be a top candidate for a major refactor.
+      This is probably the most frequently used revrun cli, so this should
+      definitely be a top candidate for a major refactor.
 """
 import copy
 import datetime as dt
@@ -61,6 +61,7 @@ STATS_HELP = ("Print summary statistics instead of status information. Only "
               "chunk files). (boolean)")
 FIELD_HELP = ("Field in dataset to use if request stat summary (defaults to"
               "mean_cf).")
+AU_HELP = ("Count AUs used for requested runs. (boolean)")
 
 CONFIG_DICT = {
     "gen": "config_gen.json",
@@ -164,7 +165,7 @@ class RRLogs(No_Pipeline):
 
     def __init__(self, folder=".", module=None, status=None, error=None,
                  out=None, walk=False, full_print=False, csv=False,
-                 stats=False, field="mean_cf"):
+                 stats=False, field="mean_cf", count_aus=False):
         """Initialize an RRLogs object."""
         self.folder = os.path.expanduser(os.path.abspath(folder))
         self.module = module
@@ -176,6 +177,7 @@ class RRLogs(No_Pipeline):
         self.csv = csv
         self.stats = stats
         self.field = field
+        self.count_aus = count_aus
 
     def __repr__(self):
         """Return RRLogs object representation string."""
@@ -392,21 +394,6 @@ class RRLogs(No_Pipeline):
 
         return pid_dirs
 
-    def get_runtime(self, job):
-        """Get the time from start to present for a job (dictionary entry)."""
-        # Just in case an old version gets through
-        if "time_start" not in job:
-            return "NA"
-
-        # Calculate runtime up to now
-        start_string = job["time_start"]
-        start = dt.datetime.strptime(start_string, "%d-%b-%Y %H:%M:%S")
-        end = dt.datetime.today()
-        runtime = end - start
-        runtime = str(runtime).split(".")[0]
-
-        return runtime
-
     def infer_runtime(self, job):
         """Infer the runtime for a specific job (dictionary entry)."""
         if "fout" not in job:
@@ -469,10 +456,8 @@ class RRLogs(No_Pipeline):
                         if "job_id" in job and "runtime" not in job:
                             if "total_runtime" in job:
                                 job["runtime"] = job["total_runtime"]
-                            # elif "time_start" not in job:
-                            #     job["runtime"] = self.infer_runtime(job)
                             else:
-                                job["runtime"] = self.get_runtime(job)
+                                job["runtime"] = "N/A"
                             status[module][label] = job
         return status
 
@@ -663,6 +648,7 @@ class RRLogs(No_Pipeline):
 
     def statuses(self, verbose=False):
         """Return full dataframe of status entries."""
+        # Build data frame for one or more jobs
         if len(self.folders) > 1:
             dfs = []
             args = []
@@ -679,6 +665,10 @@ class RRLogs(No_Pipeline):
             args = (self.folder, self.folders[0], self.module, self.status,
                     self.error, self.out, verbose)
             df = self._run(args)
+
+        # Add runtime in hours
+        df["runtime_hrs"] = df["runtime"].apply(self._to_hours)
+
         return df
 
     def status_dataframe(self, sub_folder, module=None):
@@ -696,7 +686,7 @@ class RRLogs(No_Pipeline):
             if module:
                 df = self.module_status_dataframe(status, module)
                 if df is None:
-                    msg = (f"{module} not found in status file.\n")
+                    msg = f"{module} not found in status file.\n"
                     print(Fore.RED + msg + Style.RESET_ALL)
                     return
 
@@ -788,6 +778,20 @@ class RRLogs(No_Pipeline):
             mdf = mdf.join(out)
 
         return mdf
+
+    def _count_aus(self, df):
+        """Count the AUs used in status data frame."""
+        host = os.uname()[1]
+        if host.startswith("k"):
+            rate = 10
+            host = "kestrel"
+        elif host.startswith("e"):
+            rate = 3
+            host = "eagle"
+        hours = df["runtime_hrs"].sum()
+        aus = hours * rate
+        out = f"AUs ({host}, {rate}x) = {round(aus, 2):,}"
+        print(out)
 
     def _run(self, args):
         """Print status and job pids for a single project directory."""
@@ -906,10 +910,28 @@ class RRLogs(No_Pipeline):
             print(Fore.YELLOW + msg + Style.RESET_ALL)
         print(f"{name}\n{pdf}")
 
+    def _to_hours(self, time_string):
+        """Convert timestamp to number of hours."""
+        if time_string != "N/A":
+            hours, minutes, seconds = map(int, time_string.split(":"))
+            hours += ((minutes / 60) + (seconds / 3_600))
+        else:
+            hours = pd.NA
+        return hours
+
     def main(self):
         """Run the appropriate rrlogs functions for a folder."""
+        # Turn off print states for certain flags
+        verbose = True
+        if self.count_aus or self.csv:
+            verbose = False
+
         # Run rrlogs for each
-        df = self.statuses(verbose=True)
+        df = self.statuses(verbose=verbose)
+
+        # Count AUs
+        if self.count_aus:
+            self._count_aus(df)
 
         # Write to file
         if self.csv:
@@ -927,8 +949,9 @@ class RRLogs(No_Pipeline):
 @click.option("--csv", "-c", is_flag=True, help=SAVE_HELP)
 @click.option("--stats", "-st", is_flag=True, help=STATS_HELP)
 @click.option("--field", "-fd", default=None, help=FIELD_HELP)
+@click.option("--count_aus", "-au", is_flag=True, help=AU_HELP)
 def main(folder, module, status, error, out, walk, full_print, csv, stats,
-         field):
+         field, count_aus):
     r"""REVRUNS - Check Logs.
 
     Check log files of a reV run directory. Assumes certain standard
@@ -946,15 +969,15 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
     "qaqc": "config_qaqc.json" \n
     """
     rrlogs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
-                    stats, field)
+                    stats, field, count_aus)
     rrlogs.main()
 
 
 if __name__ == "__main__":
-    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test/'
+    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test2/'
     sub_folder = folder
     error = None
-    out = "0"
+    out = None
     walk = False
     module = None
     status = None
@@ -963,6 +986,7 @@ if __name__ == "__main__":
     stats = False
     verbose = False
     field = None
+    count_aus = False
     self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
-                  stats)
+                  stats, count_aus=count_aus)
     self.main()
