@@ -254,7 +254,7 @@ class RRLogs(No_Pipeline):
             return None
 
         # This might be empty
-        if not mstatus:
+        if not mstatus or len(mstatus) == 1:
             return None
 
         # The first entry is the pipeline index
@@ -866,7 +866,7 @@ class RRLogs(No_Pipeline):
         """Run if only one sub folder is present in main run directory."""
         args = (self.folder, self.folders[0], self.module, self.status,
                 self.error, self.out)
-        df = self._run(args)
+        df = self._run(args) 
         return df
 
     def _stat_print(self, df, print_folder):
@@ -985,7 +985,7 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test3/'
+    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test4/'
     sub_folder = folder
     error = None
     out = None
@@ -997,7 +997,7 @@ if __name__ == "__main__":
     stats = False
     verbose = False
     field = None
-    count_aus = True
+    count_aus = False
     verbose = True
     self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
                   stats, count_aus=count_aus, verbose=verbose)
