@@ -435,7 +435,7 @@ class RRLogs(No_Pipeline):
         """Find the log directory, assumes one per folder."""
         # If there is a log directory directly in this folder use that
         contents = glob(os.path.join(folder, "*"))
-        possibles = [c for c in contents if "log" in c]
+        possibles = [c for c in contents if "logs" in c]
 
         if len(possibles) == 1:
             logdir = os.path.join(folder, possibles[0])
@@ -774,8 +774,8 @@ class RRLogs(No_Pipeline):
         elif host.startswith("e"):
             rate = 3
             host = "eagle"
-        minutes = df["runtime"].sum()
-        aus = (minutes / 60) * rate
+        hours = df["runtime"].apply(self._to_hours).sum()
+        aus = hours * rate
         out = f"AUs ({host}, {rate}x) = {round(aus, 2):,}"
         print(out)
 
@@ -985,19 +985,19 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test2/'
+    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test3/'
     sub_folder = folder
     error = None
     out = None
     walk = False
     module = None
     status = None
-    full_print = True
+    full_print = False
     csv = False
     stats = False
     verbose = False
     field = None
-    count_aus = False
+    count_aus = True
     verbose = True
     self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
                   stats, count_aus=count_aus, verbose=verbose)
