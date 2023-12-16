@@ -2,9 +2,12 @@
 
 A set of utilities and command line interfaces that help to setup and run reV.
 """
-import importlib.metadata
+from importlib.metadata import version, PackageNotFoundError
 
 from .paths import Paths
 
 
-REV_VERSION = importlib.metadata.version("NREL-reV")
+try:
+    REV_VERSION = version("NREL-reV")
+except PackageNotFoundError:
+    REV_VERSION = None

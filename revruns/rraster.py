@@ -75,7 +75,6 @@ def gpkg(src, dst, variable, resolution, crs, fillna, cutline):
     # Convert to true grid
     array, transform = to_grid(gdf, variable, resolution)
 
-
     # Or rasterize
     # rrasterize(gdf, resolution, dst, fillna, cutline)
 
@@ -214,13 +213,15 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
     os.remove(tmp_src)
 
 
-def to_grid(gdf, variable, resolution):
+def to_grid(gdf, data, resolution):
     """Convert coordinates from an irregular point dataset into an even grid.
 
     Parameters
     ----------
-    gdf: geopandas.geodataframe.GeoDataFrame
-        A geopandas data frame
+    gdf : geopandas.geodataframe.GeoDataFrame
+        A geopandas data frame of coordinates.
+    data : np.ndarray
+        Numpy array of data.
     resolution: int | float
         The resolution of the target grid.
 
@@ -236,32 +237,24 @@ def to_grid(gdf, variable, resolution):
     it eats up memory. If we saved the df to file, opened it as a dask data
     frame, and generated the arrays as dask arrays we might be able to save
     space.
-    - At the moment it is a little awkardly shaped, just because I haven't
-    gotten to it yet.
     """
-    # Only one variable at a time here
-    gdf = gdf[[variable, "geometry"]]
-
-    # At the end of all this the actual data will be inbetween these columns
-    non_values = ["geometry", "gx", "gy", "ix", "iy"]
-
     # Get the extent
     minx, miny, maxx, maxy = gdf.total_bounds
 
     # Estimate target grid coordinates
     gridx = np.arange(minx, maxx + resolution, resolution)
-    gridy = np.arange(miny, maxy + resolution, resolution)
+    gridy = np.arange(maxy + resolution, miny, -resolution)
     grid_points = np.array(np.meshgrid(gridy, gridx)).T.reshape(-1, 2)
 
     # Go ahead and make the geotransform
-    geotransform = [resolution, 0, minx, 0, resolution, miny]
+    geotransform = [resolution, 0, minx, 0, -resolution, miny]
 
     # Get source point coordinates
     gdf["y"] = gdf["geometry"].apply(lambda p: p.y)
     gdf["x"] = gdf["geometry"].apply(lambda p: p.x)
     points = gdf[["y", "x"]].values
 
-    # Build kdtree
+    # Build kdtree  # <-------------------------------------------------------- Nearest neighbor is not appropriate for the irregular grids like the WTK, what to do? Interpolate here?
     ktree = cKDTree(grid_points)
     _, indices = ktree.query(points)
 
@@ -273,17 +266,16 @@ def to_grid(gdf, variable, resolution):
     gdf["iy"] = gdf["gy"].apply(lambda y: np.where(gridy == y)[0][0])
     gdf["ix"] = gdf["gx"].apply(lambda x: np.where(gridx == x)[0][0])
 
-    # Now we want just the values from the data frame, no coordinates
-    values = gdf[variable].T.values
+    # Okay, now use this to create our empty target grid and assign values
+    if len(data.shape) == 1:
+        grid = np.zeros((gridy.shape[0], gridx.shape[0]))
+        grid[grid == 0] = np.nan
+        grid[gdf["iy"].values, gdf["ix"].values] = data
+    else:
+        grid = np.zeros((data.shape[0], gridy.shape[0], gridx.shape[0]))
+        grid[grid == 0] = np.nan
+        grid[:, gdf["iy"].values, gdf["ix"].values] = data
 
-    # Okay, now use this to create our 2D empty target grid
-    grid = np.zeros((gridy.shape[0], gridx.shape[0]))
-    grid[grid == 0] = np.nan
-
-    # Now, use the cartesian indices to add the values to the new grid
-    grid[gdf["iy"].values, gdf["ix"].values] = values  # <--------------------- Check these values against the original dataset
-
-    # Holy cow, did that work?
     return grid, geotransform
 
 
