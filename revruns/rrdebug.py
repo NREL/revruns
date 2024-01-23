@@ -264,7 +264,7 @@ class RRDebug:
 
 @click.command()
 @click.argument("directory", default=".")
-@click.option("--n_points", "-n", default=None, help=HELP["n"])
+@click.option("--n_points", "-n", default=10, help=HELP["n"])
 def main(directory, n_points):
     """RRDebug - Create debugging files.
     
@@ -276,5 +276,5 @@ def main(directory, n_points):
 
 
 if __name__ == "__main__":
-    directory = "/projects/rev/projects/ffi/fy24/rev/solar/test"
+    directory = "/projects/rev/projects/ffi/fy24/rev/solar/test4"
     self = RRDebug(rundir=directory)

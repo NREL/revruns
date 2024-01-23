@@ -176,7 +176,7 @@ SLURM_TEMPLATE = (
 
 echo Running on: $HOSTNAME, Machine Type: $MACHTYPE
 echo CPU: $(cat /proc/cpuinfo | grep "model name" -m 1 | cut -d:  -f2)
-echo RAM: $(free -h | grep  "Mem:" | cut -c16-21)
+echo RAM: $(free -h | grep  "Mem:" | cut -c15-21)
 
 source ~/.bashrc
 module load conda

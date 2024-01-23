@@ -278,7 +278,7 @@ class RRLogs(No_Pipeline):
         if not mstatus:
             for col in mdf.columns:
                 if col == "job_status":
-                    mstatus[col] = "unsubmitted"
+                    mstatus[col] = "not submitted"
                 else:
                     mstatus[col] = None
             mstatus = {mkey: mstatus}
@@ -301,12 +301,14 @@ class RRLogs(No_Pipeline):
                     mdf["file"] = mdf["out_fpath"]
 
             # Add date
-            if "time_end" not in mdf:
+            if "time_end" not in mdf and "time_start" in mdf:
                 mdf["date"] = mdf["time_start"]
-                # mdf["date"] = mdf["file"].apply(self.find_date)
-            else:
+            elif "time_end" in mdf and "time_submitted" in mdf:
                 mdf["date_submitted"] = mdf["time_submitted"]
                 mdf["date_completed"] = mdf["time_end"]
+            else:
+                mdf["date_submitted"] = "na"
+                mdf["date_completed"] = "na"
 
             if "finput" not in mdf:
                 mdf["finput"] = mdf["file"]
@@ -985,7 +987,7 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '/projects/rev/projects/ffi/fy24/rev/solar/test4/'
+    folder = '/kfs2/shared-projects/rev/projects/seto/fy23/climate_scenarios/rev/bc/generation/1_ecearth3_wind_2050'
     sub_folder = folder
     error = None
     out = None
@@ -1001,4 +1003,7 @@ if __name__ == "__main__":
     verbose = True
     self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
                   stats, count_aus=count_aus, verbose=verbose)
+
+    _, status = self.find_status(sub_folder)
+
     self.main()
