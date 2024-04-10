@@ -12,7 +12,9 @@ import geopandas as gpd
 import h5py
 import numpy as np
 import pandas as pd
+import rasterio as rio
 
+from pyproj import CRS
 from revruns import rr
 from revruns.gdalmethods import rasterize
 
@@ -41,7 +43,32 @@ FILL_HELP = ("Fill na values by interpolation. (boolen)")
 CUT_HELP = ("Path to vector file to use to clip output. (str)")
 
 
-def csv(src, dst, variable, res, crs, fillna, cutline):
+
+def write_raster(grid, geotransform, crs, dst):
+    """Write an array to a geotiff."""
+    # Format the CRS
+    crs = CRS(crs)
+
+    # Create a rasterio style georeferencing profile
+    profile = {
+        'driver': 'GTiff',
+        'dtype': str(grid.dtype),
+        'nodata': None,
+        'width': grid.shape[1],
+        'height': grid.shape[0],
+        'count': 1,
+        'crs': crs,
+        'transform': geotransform,
+        'tiled': False,
+        'interleave': 'band'
+     }
+
+    with rio.Env():
+        with rio.open(dst, "w", **profile) as file:
+            file.write(grid, 1)
+
+
+def csv(src, dst, variable, resolution, crs, fillna, cutline):
     # This is inefficient
     df = pd.read_csv(src)
     gdf = df.rr.to_geo()
@@ -51,7 +78,11 @@ def csv(src, dst, variable, res, crs, fillna, cutline):
     gdf = gdf.to_crs(crs)
 
     # And finally rasterize
-    rrasterize(gdf, res, dst, fillna, cutline)
+    data = gdf[variable].values
+    grid, geotransform, gridy, gridx = to_grid(gdf, data, resolution)
+
+    # And write to raster
+    write_raster(grid, geotransform, crs, dst)    
 
 
 def get_scale(ds, variable):
@@ -73,10 +104,10 @@ def gpkg(src, dst, variable, resolution, crs, fillna, cutline):
     gdf = gdf.to_crs(crs)
 
     # Convert to true grid
-    array, transform = to_grid(gdf, variable, resolution)
+    array, transform = to_grid(gdf, gdf[variable], resolution)
 
-    # Or rasterize
-    # rrasterize(gdf, resolution, dst, fillna, cutline)
+    # And finally rasterize
+    rrasterize(gdf, resolution, dst, fillna, cutline)
 
 
 def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
@@ -139,7 +170,7 @@ def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
     gdf = gdf.to_crs(crs)
 
     # Create a consistent grid out of this
-    # gdf = to_grid(gdf, variable, resolution)
+    gdf = to_grid(gdf, variable, resolution)
 
     # And finally rasterize
     rrasterize(gdf, resolution, dst, fillna, cutline)
@@ -204,8 +235,10 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
 
     # Cut to vector
     if cutline:
+        cutline = str(Path(cutline).expanduser())
         tmp_dst = str(dst).replace(".tif", "_tmp.tif")
-        sp.call(["gdalwarp", dst, tmp_dst, "-cutline", cutline])
+        sp.call(["gdalwarp", dst, tmp_dst, "-crop_to_cutline", "-cutline",
+                 cutline])
         os.remove(dst)
         shutil.move(tmp_dst, dst)
 
@@ -241,17 +274,23 @@ def to_grid(gdf, data, resolution):
     # Get the extent
     minx, miny, maxx, maxy = gdf.total_bounds
 
+    # These are centroids of points, we want top left corners
+    minx -= (resolution / 2)
+    maxx -= (resolution / 2)
+    miny += (resolution / 2)
+    maxy += (resolution / 2)
+
     # Estimate target grid coordinates
-    gridx = np.arange(minx, maxx + resolution, resolution)
-    gridy = np.arange(maxy + resolution, miny, -resolution)
+    gridx = np.arange(minx, maxx, resolution)
+    gridy = np.arange(maxy, miny, -resolution)
     grid_points = np.array(np.meshgrid(gridy, gridx)).T.reshape(-1, 2)
 
     # Go ahead and make the geotransform
-    geotransform = [resolution, 0, minx, 0, -resolution, miny]
+    geotransform = [resolution, 0, minx, 0, -resolution, maxy]
 
     # Get source point coordinates
-    gdf["y"] = gdf["geometry"].apply(lambda p: p.y)
-    gdf["x"] = gdf["geometry"].apply(lambda p: p.x)
+    gdf["y"] = gdf["geometry"].apply(lambda p: p.y + (resolution / 2))
+    gdf["x"] = gdf["geometry"].apply(lambda p: p.x - (resolution / 2))
     points = gdf[["y", "x"]].values
 
     # Build kdtree  # <-------------------------------------------------------- Nearest neighbor is not appropriate for the irregular grids like the WTK, what to do? Interpolate here?
@@ -276,7 +315,10 @@ def to_grid(gdf, data, resolution):
         grid[grid == 0] = np.nan
         grid[:, gdf["iy"].values, gdf["ix"].values] = data
 
-    return grid, geotransform
+    # Go ahead and return the x and y coordinates. Calculating from geom
+    # can lead to data precision errors
+
+    return grid, geotransform, gridy, gridx
 
 
 @click.command()
@@ -305,10 +347,15 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
 
 
 if __name__ == "__main__":
-    src =  Path("/Users/twillia2/projects/fy23/atb_bespoke/paper_figures/data/figure7/review_reference_2030_moderate_140hh_196rd_supply-curve_vs_reference_2030_moderate_composite_supply-curve_diff_annual_energy-means.gpkg")
-    dst = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.tif"
-    resolution = 12270
+    resolution = 11_520
+    crs = "esri:102008"
+    variable = "mean_cf_dc"
+    cutline = "~/data/vectors/conus_coastal_draft.gpkg"
+    src = "~/review_datasets/seto_fy23/scratch/01_reference_supply-curve.csv"
+    dst = "~/review_datasets/seto_fy23/scratch/01_reference_supply-curve_cf.tif"
+    dst = os.path.expanduser(dst)
     fillna = False
-    variable = "annual_energy_means_difference_percent"
-    crs = "epsg:5070"
-    cutline = None
+    if os.path.exists(dst):
+        os.remove(dst)
+    csv(src, dst, variable, resolution, crs, fillna, cutline)
+
