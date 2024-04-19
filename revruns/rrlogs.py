@@ -58,9 +58,10 @@ FULL_PRINT_HELP = ("When printing log outputs (using -o <pid> or -e <pid>) "
 SAVE_HELP = ("Write the outputs of an rrlogs call to a csv. (boolean)")
 STATS_HELP = ("Print summary statistics instead of status information. Only "
               "works for existing files (i.e., completed files not in "
-              "chunk files). (boolean)")
-FIELD_HELP = ("Field in dataset to use if request stat summary (defaults to"
-              "mean_cf).")
+              "chunk files). Must be used with --field or -fd if target "
+              "variable is not the default (cf_mean). (boolean)")
+FIELD_HELP = ("Field in dataset to use if request stat summary (defaults to "
+              "mean_cf). (str)")
 AU_HELP = ("Count AUs used for requested runs. (boolean)")
 VERBOSE_HELP = ("Print status data to console. (boolean)")
 
@@ -139,6 +140,7 @@ def read_h5(fpath, field):
         meta["gid"] = meta.index
         meta[field] = data
     meta = meta[["gid", field]]
+
     return meta
 
 
@@ -753,7 +755,6 @@ class RRLogs(No_Pipeline):
         mdf["out_file"][pd.isnull(mdf["out_file"])] = "NaN"
         mdf["exists"] = mdf["out_file"].apply(os.path.exists)
         mdf = mdf[mdf["exists"]]
-        print(mdf.columns)
 
         # Add stats if anything is left
         if mdf.shape[0] > 0:
@@ -960,7 +961,7 @@ class RRLogs(No_Pipeline):
 @click.option("--full_print", "-fp", is_flag=True, help=FULL_PRINT_HELP)
 @click.option("--csv", "-c", is_flag=True, help=SAVE_HELP)
 @click.option("--stats", "-st", is_flag=True, help=STATS_HELP)
-@click.option("--field", "-fd", default=None, help=FIELD_HELP)
+@click.option("--field", "-fd", default="cf_mean", help=FIELD_HELP)
 @click.option("--count_aus", "-au", is_flag=True, help=AU_HELP)
 @click.option("--verbose", "-v", is_flag=True, default=True, help=VERBOSE_HELP)
 def main(folder, module, status, error, out, walk, full_print, csv, stats,
@@ -987,7 +988,7 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '/kfs2/shared-projects/rev/projects/seto/fy23/climate_scenarios/rev/bc/generation/1_ecearth3_wind_2050'
+    folder = '/projects/rev/projects/ffi/fy24/rev/solar/main'
     sub_folder = folder
     error = None
     out = None
@@ -996,7 +997,7 @@ if __name__ == "__main__":
     status = None
     full_print = False
     csv = False
-    stats = False
+    stats = True
     verbose = False
     field = None
     count_aus = False

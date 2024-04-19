@@ -205,7 +205,7 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
     # Cut to vector
     if cutline:
         tmp_dst = str(dst).replace(".tif", "_tmp.tif")
-        sp.call(["gdalwarp", dst, tmp_dst, "-cutline", cutline])
+        sp.call(["gdalwarp", dst, tmp_dst, "-cutline", cutline, "-at"])
         os.remove(dst)
         shutil.move(tmp_dst, dst)
 
@@ -302,13 +302,3 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
         csv(src, dst, variable, resolution, crs, fillna, cutline)
     elif extension == ".gpkg":
         gpkg(src, dst, variable, resolution, crs, fillna, cutline)
-
-
-if __name__ == "__main__":
-    src =  Path("/Users/twillia2/projects/fy23/atb_bespoke/paper_figures/data/figure7/review_reference_2030_moderate_140hh_196rd_supply-curve_vs_reference_2030_moderate_composite_supply-curve_diff_annual_energy-means.gpkg")
-    dst = "/lustre/eaglefs/shared-projects/rev/projects/india/uttar_pradesh_hybrid/data/shapefiles/resource_regions.tif"
-    resolution = 12270
-    fillna = False
-    variable = "annual_energy_means_difference_percent"
-    crs = "epsg:5070"
-    cutline = None
