@@ -168,7 +168,7 @@ class RRLogs(No_Pipeline):
 
     def __init__(self, folder=".", module=None, status=None, error=None,
                  out=None, walk=False, full_print=False, csv=False,
-                 stats=False, field="mean_cf", count_aus=False,
+                 stats=False, field="cf_mean", count_aus=False,
                  verbose=True):
         """Initialize an RRLogs object."""
         self.folder = os.path.expanduser(os.path.abspath(folder))
@@ -744,7 +744,15 @@ class RRLogs(No_Pipeline):
         elif ext == "h5":
             df = read_h5(fpath, self.field)
         else:
-            raise NotImplementedError(f"Cannot summarize {ext} files.")
+            raise NotImplementedError(
+                 Fore.RED + f"Cannot summarize {ext} files." + Style.RESET_ALL
+            )
+
+        # Check that the field is in the data frame
+        if self.field not in df:
+            raise KeyError(
+                Fore.RED + f"{self.field} not in {fpath}." + Style.RESET_ALL
+            )
 
         # Calculate min, max, std, etc.
         return df.iloc[:, -1].describe()
@@ -755,15 +763,12 @@ class RRLogs(No_Pipeline):
         mdf["out_file"][pd.isnull(mdf["out_file"])] = "NaN"
         mdf["exists"] = mdf["out_file"].apply(os.path.exists)
         mdf = mdf[mdf["exists"]]
-        print(mdf.columns)
 
         # Add stats if anything is left
         if mdf.shape[0] > 0:
             fpaths = mdf["out_file"]
             out = fpaths.apply(self._add_stat)
-            mdf["fname"] = mdf["out_file"].parallel_apply(
-                lambda x: os.path.basename(x)
-            )
+            mdf["fname"] = mdf["out_file"].parallel_apply(os.path.basename)
             mdf = mdf[["job_id", "fname"]]
             mdf = mdf.join(out)
 
@@ -962,7 +967,7 @@ class RRLogs(No_Pipeline):
 @click.option("--full_print", "-fp", is_flag=True, help=FULL_PRINT_HELP)
 @click.option("--csv", "-c", is_flag=True, help=SAVE_HELP)
 @click.option("--stats", "-st", is_flag=True, help=STATS_HELP)
-@click.option("--field", "-fd", default=None, help=FIELD_HELP)
+@click.option("--field", "-fd", default="cf_mean", help=FIELD_HELP)
 @click.option("--count_aus", "-au", is_flag=True, help=AU_HELP)
 @click.option("--verbose", "-v", is_flag=True, default=True, help=VERBOSE_HELP)
 def main(folder, module, status, error, out, walk, full_print, csv, stats,
