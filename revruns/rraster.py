@@ -289,8 +289,8 @@ def to_grid(gdf, data, resolution):
     geotransform = [resolution, 0, minx, 0, -resolution, maxy]
 
     # Get source point coordinates
-    gdf["y"] = gdf["geometry"].apply(lambda p: p.y + (resolution / 2))
     gdf["x"] = gdf["geometry"].apply(lambda p: p.x - (resolution / 2))
+    gdf["y"] = gdf["geometry"].apply(lambda p: p.y + (resolution / 2))
     points = gdf[["y", "x"]].values
 
     # Build kdtree  # <-------------------------------------------------------- Nearest neighbor is not appropriate for the irregular grids like the WTK, what to do? Interpolate here?

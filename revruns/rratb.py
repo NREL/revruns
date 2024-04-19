@@ -216,6 +216,8 @@ class ATB:
     def data(self):
         """Return the filtered dataset."""
         df = self.full_data.copy()
+        df.loc[df[self.tech_field].isnull()] = "nan"
+
         df[self.tech_field] = df[self.tech_field].apply(
             lambda x: x.replace("-", "").replace(" ", "").lower()
         )
