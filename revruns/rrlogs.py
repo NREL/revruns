@@ -13,6 +13,7 @@ import json
 import os
 import warnings
 
+from collections import deque
 from glob import glob
 from pathlib import Path
 
@@ -55,14 +56,14 @@ FULL_PRINT_HELP = ("When printing log outputs (using -o <pid> or -e <pid>) "
                    "may fill up your entire shell so the default is to limit "
                    "this output to the first 20 lines of of the target log "
                    "file. (boolean)")
-SAVE_HELP = ("Write the outputs of an rrlogs call to a csv. (boolean)")
+SAVE_HELP = "Write the outputs of an rrlogs call to a csv. (boolean)"
 STATS_HELP = ("Print summary statistics instead of status information. Only "
               "works for existing files (i.e., completed files not in "
               "chunk files). (boolean)")
 FIELD_HELP = ("Field in dataset to use if request stat summary (defaults to"
               "mean_cf).")
-AU_HELP = ("Count AUs used for requested runs. (boolean)")
-VERBOSE_HELP = ("Print status data to console. (boolean)")
+AU_HELP = "Count AUs used for requested runs. (boolean)"
+VERBOSE_HELP = "Print status data to console. (boolean)"
 
 CONFIG_DICT = {
     "gen": "config_gen.json",
@@ -144,26 +145,7 @@ def read_h5(fpath, field):
     return meta
 
 
-class Log_Finder:
-    """Methods for finding logging information in a run directory."""
-
-
-class No_Pipeline(Log_Finder):
-    """Methods for checking logs without a reV pipeline."""
-
-    def __init__(self, folder=".", error=None, out=None, walk=False):
-        """Initialize NPipeline object."""
-        self.folder = folder
-        self.error = error
-        self.out = out
-        self.walk = walk
-
-    @property
-    def error_logs(self):
-        """Return paths to all error logs."""
-
-
-class RRLogs(No_Pipeline):
+class RRLogs:
     """Methods for checking rev run statuses."""
 
     def __init__(self, folder=".", module=None, status=None, error=None,
@@ -369,7 +351,7 @@ class RRLogs(No_Pipeline):
             return
 
         # Read each line in the log
-        with open(log, "r") as file:
+        with open(log, "r", encoding="utf-8") as file:
             lines = file.readlines()
 
         # Limit the number of lines if full_print is not set
@@ -435,7 +417,7 @@ class RRLogs(No_Pipeline):
 
         return paths
 
-    def find_logs(self, folder):  # <------------------------------------------ Speed this up or use find_files
+    def find_logs(self, folder):
         """Find the log directory, assumes one per folder."""
         # If there is a log directory directly in this folder use that
         contents = glob(os.path.join(folder, "*"))
@@ -457,8 +439,8 @@ class RRLogs(No_Pipeline):
             if not logdir:
                 # The file might not open
                 try:
-                    config = json.load(open(file, "r"))
-                except:  # <--------------------------------------------------- What would this/these be?
+                    config = json.load(open(file, "r", encoding="utf-8"))
+                except:
                     pass
 
                 # The directory might be named differently
@@ -525,7 +507,7 @@ class RRLogs(No_Pipeline):
                     pid_dirs.append(folder)
 
         if not pid_dirs:
-            msg = "No log files found for pid {}".format(target_pid)
+            msg = f"No log files found for pid {target_pid}"
             raise FileNotFoundError(Fore.RED + msg + Style.RESET_ALL)
 
         return pid_dirs
@@ -546,11 +528,14 @@ class RRLogs(No_Pipeline):
         logdir = self.find_logs(dirout)
         if logdir:
             stdout = os.path.join(logdir, "stdout")
-            logpath = glob(os.path.join(stdout, "*{}*.o".format(jobid)))[0]
+            logpath = glob(os.path.join(stdout, f"*{jobid}*.o"))[0]
 
-            # We can't get file creation in Linux
+            # We can't get file creation in Linux - Use log printouts
             with open(logpath, "r", encoding="utf-8") as file:
-                lines = [line.replace("\n", "") for line in file.readlines()]
+                head = [next(file) for _ in range(100)]
+                tail = list(deque(file, 100))
+            lines = head + tail
+            lines = [l.replace("\n", "") for l in lines]
 
             time_lines = []
             for line in lines:
@@ -875,7 +860,7 @@ class RRLogs(No_Pipeline):
         """Run if only one sub folder is present in main run directory."""
         args = (self.folder, self.folders[0], self.module, self.status,
                 self.error, self.out)
-        df = self._run(args) 
+        df = self._run(args)
         return df
 
     def _stat_print(self, df, print_folder):
@@ -898,7 +883,6 @@ class RRLogs(No_Pipeline):
 
         # Color the table
         df = df.apply(color_column, axis=0)
-
         pdf = tabulate(df, showindex=False, headers=df.columns,
                        tablefmt="simple")
         print(f"{name}\n{pdf}")
@@ -993,24 +977,24 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
     rrlogs.main()
 
 
-if __name__ == "__main__":
-    folder = '/kfs2/shared-projects/rev/projects/seto/fy23/climate_scenarios/rev/bc/generation/1_ecearth3_wind_2050'
-    sub_folder = folder
-    error = None
-    out = None
-    walk = False
-    module = None
-    status = None
-    full_print = False
-    csv = False
-    stats = False
-    verbose = False
-    field = None
-    count_aus = False
-    verbose = True
-    self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
-                  stats, count_aus=count_aus, verbose=verbose)
+# if __name__ == "__main__":
+#     folder = '.'
+#     sub_folder = folder
+#     error = None
+#     out = None
+#     walk = False
+#     module = None
+#     status = None
+#     full_print = False
+#     csv = False
+#     stats = False
+#     verbose = False
+#     field = None
+#     count_aus = False
+#     verbose = True
+#     logs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
+#                   stats, count_aus=count_aus, verbose=verbose)
 
-    _, status = self.find_status(sub_folder)
+#     _, status = logs.find_status(sub_folder)
 
-    self.main()
+#     logs.main()

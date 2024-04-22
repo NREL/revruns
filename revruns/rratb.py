@@ -56,6 +56,16 @@ TURBINE_CLASSES = {  # Keys represent top of ws bin @ 110 m/s
     6.5: "T3",
     5.9: "T4"
 }
+SCENARIO_CONVERSIONS = {  # Old ATB's have different scenario names
+    "Mid": "Moderate",
+    "Low": "Advanced",
+    "High": "Conservative",
+    "Moderate": "Moderate",
+    "Advanced": "Advanced",
+    "Conservative": "Conservative",
+    "*": "*"
+}
+
 
 
 class ATB:
@@ -132,8 +142,19 @@ class ATB:
         float : Value representing capital cost for the given year, technology,
                 resource class, scenario, and technology sub-class.
         """
+        # Read in data associated with this tech and year
         df = self.data.copy()
-        df = df[df["core_metric_parameter"] == "OCC"]
+
+        # Older ATB releases don't include Overnight Capital Costs
+        if "OCC" in df["core_metric_parameter"]:
+            df = df[df["core_metric_parameter"] == "OCC"]
+        else:
+            raise NotImplementedError(f"No overnight captial cost available "
+                                      f"in the {self.atb_year} ATB.")
+            # Assuming 1 year of construction
+            # pattern = "Interest During Construction"
+            # idc = df[df["core_metric_parameter"].str.contains(pattern)]
+
         df = self._filter(df, res_class=res_class, tech=tech)
         return df["value"]
 
@@ -215,17 +236,22 @@ class ATB:
     @property
     def data(self):
         """Return the filtered dataset."""
+        # Copy original data frame
         df = self.full_data.copy()
-        df.loc[df[self.tech_field].isnull()] = "nan"
 
+        # Standardize tech fields
+        df.loc[df[self.tech_field].isnull()] = "nan"
         df[self.tech_field] = df[self.tech_field].apply(
             lambda x: x.replace("-", "").replace(" ", "").lower()
         )
+
+        # Filter for technology and cost year
         df = df[df[self.tech_field] == self.tech_alias]
         df = df[df["core_metric_variable"] == self.cost_year]
 
-        # This filters out the construction financing
-        df = df[df["scenario"] == self.scenario.capitalize()]
+        # Account for scenario naming discrepancies
+        df["scenario"] = df["scenario"].map(SCENARIO_CONVERSIONS)
+        df = df[df["scenario"].isin([self.scenario.capitalize(), "*"])]
         df = df[df["core_metric_case"] == CASES[self.case]]
         df = df[df["crpyears"].astype(str) == str(self.lifetime)]
         df.reset_index(drop=True, inplace=True)
