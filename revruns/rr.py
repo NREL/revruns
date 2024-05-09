@@ -622,7 +622,7 @@ class PandasExtension:
                 (df["latitude"] <= bbox[3])]
         return df
 
-    def to_geo(self, lat=None, lon=None):
+    def to_geo(self, lat=None, lon=None, crs='epsg:4326'):
         """Convert a Pandas data frame to a geopandas geodata frame."""
         # Let's not transform in place
         df = self._obj.copy()
@@ -649,11 +649,9 @@ class PandasExtension:
 
                 # Create the geodataframe - add in projections
                 if "geometry" in df.columns:
-                    gdf = gpd.GeoDataFrame(df, crs='epsg:4326',
-                                                geometry="geometry")
+                    gdf = gpd.GeoDataFrame(df, crs=crs, geometry="geometry")
                 if "geom" in df.columns:
-                    gdf = gpd.GeoDataFrame(df, crs='epsg:4326',
-                                                geometry="geom")
+                    gdf = gpd.GeoDataFrame(df, crs=crs, geometry="geom")
             else:
                 gdf = df
 
