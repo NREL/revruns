@@ -44,7 +44,7 @@ CUT_HELP = ("Path to vector file to use to clip output. (str)")
 
 
 
-def write_raster(grid, geotransform, crs, dst):
+def write_raster(grid, transform, crs, dst):
     """Write an array to a geotiff."""
     # Format the CRS
     crs = CRS(crs)
@@ -58,7 +58,7 @@ def write_raster(grid, geotransform, crs, dst):
         'height': grid.shape[0],
         'count': 1,
         'crs': crs,
-        'transform': geotransform,
+        'transform': transform,
         'tiled': False,
         'interleave': 'band'
      }
@@ -79,10 +79,10 @@ def csv(src, dst, variable, resolution, crs, fillna, cutline):
 
     # And finally rasterize
     data = gdf[variable].values
-    grid, geotransform, gridy, gridx = to_grid(gdf, data, resolution)
+    grid, transform, gridy, gridx = to_grid(gdf, data, resolution)
 
     # And write to raster
-    write_raster(grid, geotransform, crs, dst)    
+    write_raster(grid, transform, crs, dst)
 
 
 def get_scale(ds, variable):
@@ -104,10 +104,10 @@ def gpkg(src, dst, variable, resolution, crs, fillna, cutline):
     gdf = gdf.to_crs(crs)
 
     # Convert to true grid
-    array, transform = to_grid(gdf, gdf[variable], resolution)
+    grid, transform, gridy, gridx = to_grid(gdf, gdf[variable], resolution)
 
-    # And finally rasterize
-    rrasterize(gdf, resolution, dst, fillna, cutline)
+    # And write to raster
+    write_raster(grid, transform, crs, dst)
 
 
 def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
@@ -347,15 +347,14 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
 
 
 if __name__ == "__main__":
-    resolution = 11_520
+    resolution = 4_000
     crs = "esri:102008"
-    variable = "mean_cf_dc"
-    cutline = "~/data/vectors/conus_coastal_draft.gpkg"
-    src = "~/review_datasets/seto_fy23/scratch/01_reference_supply-curve.csv"
-    dst = "~/review_datasets/seto_fy23/scratch/01_reference_supply-curve_cf.tif"
+    variable = "wind_speed"
+    cutline = None
+    src = "/Users/twillia2/projects/fy24/seto/merris_problem/data/nsrdb_2012_wind_speed.gpkg"
+    dst = "/Users/twillia2/projects/fy24/seto/merris_problem/data/nsrdb_2012_wind_speed.tif"
     dst = os.path.expanduser(dst)
-    fillna = False
+    fillna = True
     if os.path.exists(dst):
         os.remove(dst)
-    csv(src, dst, variable, resolution, crs, fillna, cutline)
-
+    gpkg(src, dst, variable, resolution, crs, fillna, cutline)
