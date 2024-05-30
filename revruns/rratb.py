@@ -67,10 +67,10 @@ class ATB:
         """Initialize ATB object."""
         try:
             assert tech in self.technologies
-        except:
-            raise AssertionError(f"`tech` argument '{tech}' not recognized, "
-                                 "check available technology keys using "
-                                 "ATB.technologies")
+        except Exception as exc:
+            msg = (f"`tech` argument '{tech}' not recognized, check available"
+                    " technology keys using ATB.technologies")
+            raise AssertionError(msg) from exc
 
         self.atb_year = atb_year
         self.case = case
@@ -82,6 +82,9 @@ class ATB:
         self.data_home = Paths.data
         self.host = "https://oedi-data-lake.s3.amazonaws.com"
         self.url = f"{self.host}/ATB/electricity/csv/{atb_year}/ATBe.csv"
+        tech_alias = TECHNOLOGIES[self.tech]
+        tech_alias = tech_alias.replace("-", "").replace(" ", "").lower()
+        self.tech_alias = tech_alias
 
     def __repr__(self):
         """Return ATB representation string."""
@@ -145,7 +148,8 @@ class ATB:
         baseline_year : int
             The baseline year to use when calculate improvement ratios.
         resource_class : int
-            The target resource class.
+            The target resource class. Note, for older ATBs this will refer to
+            technical resource groups rather than resource classes.
 
         Returns
         -------
@@ -154,14 +158,23 @@ class ATB:
         # Get the full data table, everything else is pre-filtered
         df = self.full_data
 
+        # Standardize technology aliases
+        df[self.tech_field] = df[self.tech_field].apply(
+            lambda x: x.replace("-", "").replace(" ", "").lower()
+        )
+
+        # Standardize scenario names
+        df.loc[df["scenario"] == "Constant", "scenario"] = "Conservative"
+        df.loc[df["scenario"] == "Mid", "scenario"] = "Moderate"
+        df.loc[df["scenario"] == "Low", "scenario"] = "Advanced"
+
         # Filter
         cdf = df[
             (df["core_metric_parameter"] == "CF") &
-            (df["scenario"] == tech_scenario.capitalize()) &
-            (df["technology_alias"] == TECHNOLOGIES[self.tech]) &
-            (df["techdetail"] == f"Class{resource_class}")
+            (df[self.tech_field] == self.tech_alias) &
+            (df["techdetail"].str.endswith(f"{resource_class}")) &
+            (df["scenario"] == tech_scenario.capitalize())
         ]
-
         cdf = cdf[["core_metric_variable", "core_metric_parameter", "value"]]
         cdf = cdf.drop_duplicates()
 
@@ -203,12 +216,18 @@ class ATB:
     def data(self):
         """Return the filtered dataset."""
         df = self.full_data.copy()
-        df = df[df["technology_alias"] == TECHNOLOGIES[self.tech]]
+        df[self.tech_field] = df[self.tech_field].apply(
+            lambda x: x.replace("-", "").replace(" ", "").lower()
+        )
+        df = df[df[self.tech_field] == self.tech_alias]
         df = df[df["core_metric_variable"] == self.cost_year]
-        df = df[df["scenario"] == self.scenario.capitalize()]  # This filters out the construction financing
+
+        # This filters out the construction financing
+        df = df[df["scenario"] == self.scenario.capitalize()]
         df = df[df["core_metric_case"] == CASES[self.case]]
         df = df[df["crpyears"].astype(str) == str(self.lifetime)]
         df.reset_index(drop=True, inplace=True)
+
         return df
 
     @property
@@ -261,15 +280,19 @@ class ATB:
         """Return lookup of technology - ATB names."""
         return TECHNOLOGIES
 
+    @property
+    def tech_field(self):
+        """Return tech field for given ATB year."""
+        tech_field = "technology_alias"
+        if "technology_alias" not in self.full_data:
+            tech_field = "technology"
+        return tech_field
+
     def _filter(self, df, tech=None, res_class=None):
         if not res_class and not tech:
-            df = df[df["techdetail"] == "Class1"].iloc[0]
+            df = df[df["techdetail"].str.endswith("1")].iloc[0]
         if res_class:
-            df = df[df["techdetail"] == f"Class{res_class}"].iloc[0]
+            df = df[df["techdetail"] .str.endswith(f"{res_class}")].iloc[0]
         if tech:
             df = df[df["techdetail2"].str.contains(f"{tech}")].iloc[0]
         return df
-
-
-if __name__ == "__main__":
-    self = ATB(tech="pv_utility", atb_year=2022, cost_year=2030)

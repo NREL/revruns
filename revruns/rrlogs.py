@@ -13,10 +13,10 @@ import json
 import os
 import warnings
 
-from pandarallel import pandarallel
-
 from glob import glob
 from pathlib import Path
+
+from pandarallel import pandarallel
 
 import click
 import h5py
@@ -75,6 +75,7 @@ CONFIG_DICT = {
     "aggregation": "config_aggregation.son",
     "supply-curve": "config_supply-curve.json",
     "rep-profiles": "config_rep-profiles.json",
+    "script": "config_script.json",
     "nrwal": "config_nrwal.json",
     "qaqc": "config_qaqc.json"
 }
@@ -89,6 +90,7 @@ MODULE_NAMES = {
     "supply-curve": "supply-curve",
     "rep-profiles": "rep-profiles",
     "nrwal": "nrwal",
+    "script": "script",
     "qaqc": "qa-qc",
     "add-reeds-cols": "add-reeds-cols"
 }
