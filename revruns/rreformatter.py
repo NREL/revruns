@@ -541,7 +541,7 @@ class Exclusions:
     def _convert_coords(self, xs, ys):
         # Convert projected coordinates into WGS84
         print("Transforming xy...")
-        mx, my = np.meshgrid(xs, ys)
+        # mx, my = np.meshgrid(xs, ys)
         crs = CRS(self.profile["crs"])
         if "World Geodetic System 1984" in crs.datum.name:
             tcrs = CRS("epsg:4326")
@@ -552,8 +552,30 @@ class Exclusions:
         else:
             tcrs = CRS("epsg:4326")
 
-        transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
-        lons, lats = transformer.transform(mx, my)
+        # transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
+        # lons, lats = transformer.transform(mx, my)
+
+        #Added because original takes lots of memory for higher resolution
+        min_x, max_x = np.min(xs), np.max(xs)
+        min_y, max_y = np.min(ys), np.max(ys)
+
+        corners = [
+            geometry.Point(min_x, min_y),
+            geometry.Point(min_x, max_y),
+            geometry.Point(max_x, min_y),
+            geometry.Point(max_x, max_y)
+        ]
+        gdf = gpd.GeoDataFrame({
+            "geometry": corners
+        }, geometry=corners, crs=crs)
+        gdf = gdf.to_crs(tcrs)
+
+        x_corners, y_corners = zip(*[(point.x, point.y) for point in gdf.geometry])
+
+        x_trans = np.linspace(np.min(x_corners), np.max(x_corners), num=len(xs), dtype="float32")
+        y_trans = np.linspace(np.min(y_corners), np.max(y_corners), num=len(ys), dtype="float32")
+
+        lons, lats = np.meshgrid(x_trans, y_trans)
 
         return lons, lats
 
@@ -726,7 +748,8 @@ class Reformatter(Exclusions):
             "compress": "lzw",
             "tiled": "yes",
             "blockxsize": 128,  # How to optimize internal tiling?
-            "blockysize": 128
+            "blockysize": 128,
+            "BIGTIFF": "YES"
         }
         return ops
 
@@ -792,15 +815,14 @@ class Reformatter(Exclusions):
         # Run warp if needed
         if os.path.exists(dst) and self.overwrite_tif:
             os.remove(dst)
-        elif not os.path.exists(dst):
-            warp(
-                src=path,
-                dst=dst,
-                template=self.template,
-                creation_ops=self.creation_options,
-                multithread=self.multithread,
-                cache_max=self.gdal_cache_max
-            )
+        warp(
+            src=path,
+            dst=dst,
+            template=self.template,
+            creation_ops=self.creation_options,
+            multithread=self.multithread,
+            cache_max=self.gdal_cache_max
+        )
 
     def reformat_vectors(self):
         """Reformat all vector files in inputs."""
@@ -861,7 +883,7 @@ class Reformatter(Exclusions):
             transform = meta["transform"]
             with rio.Env():
                 array = features.rasterize(shapes, out_shape, all_touched=True,
-                                           transform=transform)
+                                           transform=transform, dtype="uint8")
 
             # Attempt to set best dtype
             dtype = str(array.dtype)
