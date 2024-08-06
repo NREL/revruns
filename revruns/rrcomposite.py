@@ -54,7 +54,7 @@ def composite(config, dst=None):
     _composite(excl_dict, excl_fpath, dst)
 
 
-def _composite(excl_dict, excl_fpath, dst, min_area=None):
+def _composite(excl_dict, excl_fpath, dst=None, min_area=None):
     """Use an exclusion dictionary, hdf5 fpath, and destination path."""
     # Run reV to merge
     masker = ExclusionMaskFromDict(excl_fpath, layers_dict=excl_dict,
@@ -83,8 +83,8 @@ def _composite(excl_dict, excl_fpath, dst, min_area=None):
 
 
 @click.command()
-@click.argument("dst")
 @click.option("--config", "-c", required=1, help=HELP["config"])
+@click.option("--dst", "-d", default=None, help=HELP["dst"])
 def main(config, dst):
     """Combine exclusion layers into one composite inclusion raster."""
     composite(config, dst)

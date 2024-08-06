@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
-"""
-Append a data set to an exclusions layer.
-
-Created on Wed Feb 19 12:27:23 2020
-
-@author: twillia2
+"""Append a data set to an exclusions layer. Doesn't check for matching
+dimensions yet.
 """
 
 import os
-import tempfile
 
 import click
 import h5py
@@ -30,19 +25,7 @@ NAME_HELP = ("The name of the added data set in the HDF5 file. Defaults to "
 @click.option("--desc", "-d", required=True, help=DESC_HELP)
 @click.option("--verbose", "-v", is_flag=True)
 def main(excl_file, add_file, name, desc, verbose):
-    """Append a data set to an exlusion file.
-    
-    Issues:
-
-        This is a rather long process.
-
-    excl_file = "/shared-projects/rev/exclusions/ATB_Exclusions.h5"
-    add_file = "/projects/rev/data/conus/friction_surface_102008/friction_surface_conus.tif"
-    desc = "Social resistance/friction index"
-    name = "friction"
-    verbose = True
-    """
-
+    """Append a geotiff data set to an exlusion file."""
     # set the name with the tiff file if not specified
     if not name:
         name = os.path.basename(add_file).split(".")[0]

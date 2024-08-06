@@ -530,10 +530,16 @@ class RRLogs:
             stdout = os.path.join(logdir, "stdout")
             logpath = glob(os.path.join(stdout, f"*{jobid}*.o"))[0]
 
-            # We can't get file creation in Linux - Use log printouts
+            # We apparently can't get file creation in Linux - Use the logs
             with open(logpath, "r", encoding="utf-8") as file:
-                head = [next(file) for _ in range(100)]
                 tail = list(deque(file, 100))
+            with open(logpath, "r", encoding="utf-8") as file:
+                head = []
+                for _ in range(100):
+                    try:
+                        head.append(next(file))
+                    except:
+                        break
             lines = head + tail
             lines = [l.replace("\n", "") for l in lines]
 
@@ -977,24 +983,24 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
     rrlogs.main()
 
 
-# if __name__ == "__main__":
-#     folder = '.'
-#     sub_folder = folder
-#     error = None
-#     out = None
-#     walk = False
-#     module = None
-#     status = None
-#     full_print = False
-#     csv = False
-#     stats = False
-#     verbose = False
-#     field = None
-#     count_aus = False
-#     verbose = True
-#     logs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
-#                   stats, count_aus=count_aus, verbose=verbose)
+if __name__ == "__main__":
+    folder = '/kfs2/projects/rev/projects/weto/fy24/temp_ice_cutoffs/temp_cutoff_15'
+    sub_folder = folder
+    error = None
+    out = None
+    walk = False
+    module = None
+    status = None
+    full_print = False
+    csv = False
+    stats = False
+    verbose = False
+    field = None
+    count_aus = False
+    verbose = True
+    logs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
+                  stats, count_aus=count_aus, verbose=verbose)
 
-#     _, status = logs.find_status(sub_folder)
+    _, status = logs.find_status(sub_folder)
 
-#     logs.main()
+    logs.main()

@@ -870,7 +870,6 @@ class Reformatter(Exclusions):
         # Remove if overwrite
         if self.overwrite_tif and os.path.exists(dst):
             os.remove(dst)
-
         # Read and process file
         gdf = self._process_vector(name, path, field, buffer)
         if not os.path.exists(dst):

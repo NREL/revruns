@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""
-Run this to setup configuration files as templates for a reV run.
-"""
-
-import os
+"""Setup configuration files as templates for a reV run."""
+import json
 
 import click
 import numpy as np
-import reV
 
-from revruns import RESOURCE_DATASETS, TEMPLATES, SAM_TEMPLATES, write_config
+
+from revruns.constants import (
+    TEMPLATES,
+    SAM_TEMPLATES,
+    SLURM_TEMPLATE
+)
 
 
 # Help printouts
@@ -25,6 +26,9 @@ ALLPOINTS_HELP = ("Use all available coordinates for the specified generator. "
 BATCH_HELP = ("Set up the `batch` module configuration template. This"
               "module will run reV with a sequence of arguments or argument"
               "combinations. (boolean)")
+BESPOKE_HELP = ("Set up the `bespoke` module configuration template. Unique to"
+                " windpower, this module will run reV with a unique layout of "
+                "individual wind turbines at each site. (boolean)")
 COLLECT_HELP = ("Setup the `collect` module configuration template and all "
                 "of its required module templates. When "
                 "you run the generation module with multiple nodes, "
@@ -33,9 +37,9 @@ COLLECT_HELP = ("Setup the `collect` module configuration template and all "
 FULL_HELP = ("Setup the full pipeline of reV module templates, from "
              "`generation` to `rep-profiles`. (boolean)")
 GEN_HELP = ("This is the generator type to simulate using the Systems "
-            "Advisor Model (SAM). Defaults to pvwattsv5. Options include: "
-            "\pvwattsv5 or pvwattsv7: Photovoltaic \nwindpower: Wind Turbines "
-            "\ncsp: Concentrating Solar Power.")
+            "Advisor Model (SAM). Options include: "
+            "\npvwattsv5 or pvwattsv7: Photovoltaic \nwindpower: Wind Turbines "
+            "\ncsp: Concentrating Solar Power. Defaults to `None`. ")
 LOGDIR_HELP = ("Logging directory. Defaults to './logs'")
 MULTIYEAR_HELP = ("Setup the `multi-year` module configuration template ."
                   "and all of its required module templates. "
@@ -43,6 +47,7 @@ MULTIYEAR_HELP = ("Setup the `multi-year` module configuration template ."
                   "large HDF5 file. (boolean)")
 OUTDIR_HELP = ("Output directory. This is also used as the SLURM job name "
                "in the queue. Defaults to './'")
+PIPELINE_HELP = "Write sample pipeline configuration template. (boolean)"
 REPPROFILES_HELP = ("Setup the `rep-profiles` module configuration "
                     "template and all of its required module templates. "
                     "This module will select a number of "
@@ -54,34 +59,42 @@ SUPPLYCURVE_HELP = ("Setup the `supply-curve` module configuration "
                     "This module will calculate supply curves "
                     "for each aggregated coordinate and return a csv. "
                     "(boolean)")
+SLURM_HELP = ("Write a template slurm batch submission .sh file.")
+PIPELINE_HELP = ("Setup a pipeline configuration template. (boolean)")
 
 MODULE_NAMES = {
     "gen": "generation",
+    "bsp": "bespoke",
     "co": "collect",
     "my": "multi-year",
     "ag": "supply-curve-aggregation",
     "sc": "supply-curve",
     "rp": "rep-profiles",
-    "ba": "batch"
+    "ba": "batch",
+    "pi": "pipeline",
+    "sl": "slurm"
 }
 
 DEFAULT_PATHS = {
-    "gen": "./config_generation.json",
-    "co": "./config_collect.json",
-    "my": "./config_multi-year.json",
-    "ag": "./config_aggregation.json",
-    "sc": "./config_supply-curve.json",
-    "rp": "./config_rep-profiles.json",
-    "ba": "./config_batch.json",
+    "generation": "./config_generation.json",
+    "bespoke": "./config_bespoke.json",
+    "collect": "./config_collect.json",
+    "multi-yeary": "./config_multi-year.json",
+    "supply-curve-aggregation": "./config_aggregation.json",
+    "supply-curve": "./config_supply-curve.json",
+    "rep-profiles": "./config_rep-profiles.json",
+    "batch": "./config_batch.json",
+    "pipeline": "./config_pipeline.json",
     "points": "./project_points/project_points.csv",
-    "sam": "./sam_configs/sam.json"
+    "sam": "./sam_configs/sam.json",
+    "slurm": "./submit.sh" 
 }
 
 # Move to main module script
 DEFAULT_YEARS = {
     "csp": [y for y in range(1998, 2019)],
     "pvwattsv5": [y for y in range(1998, 2019)],
-    "pvwattsv5": [y for y in range(1998, 2019)],
+    "pvwattsv7": [y for y in range(1998, 2019)],
     "windpower": [y for y in range(2007, 2014)]
 }
 
@@ -89,88 +102,78 @@ PIPELINE_TEMPLATE =  {
     "logging": {
         "log_level": "INFO"
     },
-    "pipeline": []
+    "pipeline": [
+        {"generation": "./config_generation.json"},
+        {"collect": "./config_collect.json"}
+    ]
 }
+
+
+def write_config(config, path, verbose=False):
+    """ Write a configuration dictionary to a json file."""
+    with open(path, "w") as file:
+        if isinstance(config, dict):
+            file.write(json.dumps(config, indent=4))
+        else:
+            file.write(config)
+
 
 @click.command()
 @click.option("--generation", "-gen", is_flag=True, help=AGGREGATION_HELP)
+@click.option("--bespoke", "-bsp", is_flag=True, help=BESPOKE_HELP)
 @click.option("--collect", "-co", is_flag=True, help=COLLECT_HELP)
 @click.option("--multiyear", "-my", is_flag=True, help=MULTIYEAR_HELP)
 @click.option("--aggregation", "-ag", is_flag=True, help=AGGREGATION_HELP)
 @click.option("--supplycurve", "-sc", is_flag=True, help=SUPPLYCURVE_HELP)
 @click.option("--repprofiles", "-rp", is_flag=True, help=REPPROFILES_HELP)
+@click.option("--pipeline", "-pl", is_flag=True, help=PIPELINE_HELP)
 @click.option("--batch", "-ba", is_flag=True, help=BATCH_HELP)
-@click.option("--tech", "-t", default="pvwattsv5", help=GEN_HELP)
+@click.option("--tech", "-t", default=None, help=GEN_HELP)
+@click.option("--slurm", "-sl", is_flag=True, help=SLURM_HELP)
 @click.option("--full", "-f", is_flag=True, help=FULL_HELP)
 @click.option("--allocation", "-alloc", default="PLACEHOLDER", help=ALLOC_HELP)
 @click.option("--output_dir", "-outdir", default="./", help=OUTDIR_HELP)
 @click.option("--log_dir", "-logdir", default="./logs", help=LOGDIR_HELP)
 @click.option("--verbose", "-v", is_flag=True)
-def main(generation, collect, multiyear, aggregation, supplycurve, repprofiles,
-         batch, tech, full, allocation, output_dir, log_dir,
-         verbose):
+def main(generation, bespoke, collect, multiyear, aggregation, supplycurve,
+         repprofiles, pipeline, batch, tech, slurm, full, allocation,
+         output_dir, log_dir, verbose):
     """Write template configuration json files for each reV module specified.
     Additionaly options will set up template sam_files and default project
     point files. Files will be written to your current directory.
 
     In the output configuration jsons the term 'PLACEHOLDER' is SET for values
-    that require user inputs. Other inputs have defaults that may or may not 
+    that require user inputs. Other inputs have defaults that may or may not
     be appropriate. To use all available points for the specified generator,
     provide the '--all-points' or '-ap' flag. To use all available years for a
     specified generator, provide the '--all-years' or '-ay' flag.
-
-    Sample Arguments
-    ----------------
-        generation = False
-        collect = False
-        multiyear = False
-        aggregation = True
-        supplycurve = True
-        repprofiles = True
-        batch = False
-        tech = "pvwattsv5"
-        allpoints = True
-        allyears = True
-        full = False
-        verbose = True
     """
-
     # Get requested modules as strings
-    strings = np.array(["gen", "co", "my", "ag", "sc", "rp", "ba"])
-    requested = np.array([generation, collect, multiyear, aggregation,
+    strings = np.array(["gen", "bsp", "co", "my", "ag", "sc", "rp", "ba"])
+    full_strings = np.array([MODULE_NAMES[string] for string in strings])
+    requested = np.array([generation, bespoke, collect, multiyear, aggregation,
                           supplycurve, repprofiles, batch])
 
     # Convert module selections from booleans to key strings
     if full:
-        modules = strings
+        modules = full_strings
     else:
-        modules = strings[requested]
+        modules = full_strings[requested]
 
-    # Retrieve the template objects
+    # Create a full templates dictionary directly from reV
     templates = {m: TEMPLATES[m] for m in modules}
 
     # Assign all years (easier to subtract than add), and add allocation
-    years = DEFAULT_YEARS[tech]
-    for m in templates.keys():
-        if "analysis_years" in templates[m]:
-            templates[m]["analysis_years"] = years
-        if "execution_control" in templates[m]:
-            templates[m]["execution_control"]["allocation"] = allocation
-        if "directories" in templates[m]:
-            templates[m]["directories"]["output_directory"] = output_dir
-            templates[m]["directories"]["log_directories"] = log_dir
-
-    # Assign all points if specified  <---------------------------------------- Not done.
-    os.makedirs("./project_points", exist_ok=True)
-
-    # Write sam template:
-    os.makedirs("./sam_configs", exist_ok=True)
-    sam_template = SAM_TEMPLATES[tech]
-
-    # Write json file for each template
-    for m in templates.keys():
-        config = templates[m]
-        path = DEFAULT_PATHS[m]
+    years = DEFAULT_YEARS["windpower"]
+    for module, config in templates.items():
+        if "analysis_years" in config:
+            config["analysis_years"] = years
+        if "execution_control" in config:
+            config["execution_control"]["allocation"] = allocation
+        if "directories" in config:
+            config["directories"]["output_directory"] = output_dir
+            config["directories"]["log_directories"] = log_dir
+        path = DEFAULT_PATHS[module]
         write_config(config, path, verbose)
 
     # If there are more than one module, write pipeline configuration
@@ -180,8 +183,25 @@ def main(generation, collect, multiyear, aggregation, supplycurve, repprofiles,
             dict = {MODULE_NAMES[m]: DEFAULT_PATHS[m]}
             pipeline["pipeline"].append(dict)
         write_config(pipeline, "./config_pipeline.json", verbose)
+    elif pipeline:
+        write_config(PIPELINE_TEMPLATE, "./config_pipeline.json", verbose)
+
+    # Write sam template:
+    if tech:
+        write_config(SAM_TEMPLATES[tech], f"sam_{tech}.json", verbose)
+
+    # Write sbatch submission template
+    if slurm:
+        write_config(SLURM_TEMPLATE, DEFAULT_PATHS["slurm"], verbose)
 
 
-if "__name__" == "__main__":
-    main()
-
+if __name__ == "__main__":
+    generation = False
+    bespoke = False
+    collect = True
+    multiyear = False
+    aggregation = False
+    supplycurve = False
+    repprofiles = False
+    batch = False
+    output_dir = "/projects/rev/projects/ffi/fy24/rev/solar/test"

@@ -345,7 +345,9 @@ def gdal_progress(complete, message, unknown):
 
 def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
               yres=None, height=None, width=None, template_path=None,
-              navalue=None, all_touch=True, dtype=None, overwrite=False):
+              navalue=None, all_touch=True, dtype=None, overwrite=False,
+              creation_ops=None, multithread=True, cache_max=None,
+              progress=True, **kwargs):
     """Rasterize a shapefile stored on disk and write outputs to a file.
 
     Parameters
@@ -357,7 +359,8 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
     attribute : str
         Attribute name being rasterized.
     t_srs : int
-        EPSG Code associated with target coordinate reference system.
+        Target proj4, wtk, or epsg code associated with target coordinate
+        reference system.
     transform : list | tuple | array
         Geometric affine transformation:
             (x-min, x-resolution, x-rotation, y-max, y-rotation, y-resoltution)
@@ -381,6 +384,18 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
         gdal.GDT_Float32, "GDT_Float32", "float32"). Available GDAL data types
         and descriptions can be found in the GDAL_TYPES dictionary.
     overwrite : boolean
+        Overwrite dst file (optional).
+    creation_ops : dict
+        A dictionary of creation option keys and values (optional).
+    multithread : boolean
+        Use all cores minus one. 
+    cache_max : int
+        Maximum cache storage in MW. If not set, it uses the GDAL default.
+    progress : boolean
+        Display progress graphic. Defaults to True.
+    **kwargs
+        Any available key word arguments for gdalwarp. Available options
+        and descriptions can be found using gdal_options("warp").
 
     Returns
     -------
@@ -400,7 +415,7 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
             else:
                 shutil.rmtree(dst)
         else:
-            print(dst + " exists, use overwrite=True to replace this file.")
+            print(f"{dst} exists, use overwrite=True to replace this file.")
             return
 
     # Convert potential posix paths
@@ -421,19 +436,20 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
         width = template.RasterXSize
         height = template.RasterYSize
         t_srs = template.GetProjection()
-        refs.ImportFromWkt(t_srs)
-    else:
+
+    # Try to interpret spatial referencing with multiple formats
+    if t_srs:
         try:
             refs.ImportFromEPSG(t_srs)
         except TypeError:
             try:
-                refs.ImportFromProj4(t_srs)
+                refs.ImportFromWkt(t_srs)
             except TypeError:
                 try:
-                    refs.ImportFromWkt(t_srs)
+                    refs.ImportFromProj4(t_srs)
                 except TypeError:
                     print("Could not interpret the coordinate reference "
-                          "system using the EPSG, proj4, or WKT formats.")
+                            "system using the EPSG, proj4, or WKT formats.")
                     raise
 
     # Use transform to derive coordinates and dimensions
@@ -473,49 +489,22 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
         ops = ["ATTRIBUTE=" + attribute]
 
     # Finally rasterize
-    gdal.RasterizeLayer(trgt, [1], layer, options=ops, callback=gdal_progress)
+    print(f"Processing {dst}:")
+    gdal.RasterizeLayer(
+        trgt,
+        [1],
+        layer,
+        options=ops,
+        callback=gdal.TermProgress_nocb
+    )
 
     # Close target an source rasters
     del trgt
     del src_data
 
-
-def read_raster(rasterpath, band=1, navalue=-9999):
-    """Read raster file return array, geotransform, and crs.
-
-    Parameters
-    ----------
-    rasterpath : str
-        Path to a raster file.
-    band : int
-        The band number desired.
-    navalue : int | float
-        The number used for non-values in the raster data set
-
-    Returns
-    -------
-        tuple:
-             raster values : numpy.ndarray
-             affine transformation : tuple
-                 (top left x coordinate, x resolution, row rotation,
-                  top left y coordinate, column rotation, y resolution)),
-            coordinate reference system : str
-                 Well-Known Text format
-    """
-    # Open raster file and read in parts necessary for rewriting
-    raster = gdal.Open(rasterpath)
-    geometry = raster.GetGeoTransform()
-    arrayref = raster.GetProjection()
-    array = np.array(raster.GetRasterBand(band).ReadAsArray())
-    raster = None
-
-    # This helped for some old use-case, but might not be necessary
-    array = array.astype(float)
-    if np.nanmin(array) < navalue:
-        navalue = np.nanmin(array)
-    array[array == navalue] = np.nan
-
-    return (array, geometry, arrayref)
+    # The stdout is struggling at the end of the process
+    if progress:
+        print("\n")
 
 
 def reproject_polygon(src, dst, t_srs):
