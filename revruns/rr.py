@@ -502,8 +502,8 @@ class PandasExtension:
 
         return df
 
-    def nearest(self, df2, fields=None, lat=None, lon=None, no_repeat=False,
-                k=5):
+    def nearest(self, df2, fields=None, lat=None, lon=None, k=5,
+                dist_max=5_000, workers=1):
         """Find all of the closest points in a second data frame.
 
         Parameters
@@ -517,15 +517,15 @@ class PandasExtension:
             The name of the latitude field.
         lon : str
             The name of the longitude field.
-        no_repeat : logical
-            Return closest points with no duplicates. For two points in the
-            left dataframe that would join to the same point in the right, the
-            point of the left pair that is closest will be associated with the
-            original point in the right, and other will be associated with the
-            next closest. (not implemented yet)
         k : int
             The number of next closest points to calculate when no_repeat is
             set to True. If no_repeat is false, this value is 1.
+        dist_max : numeric
+            If k > 1, only return values that are less than or equal to this
+            values.
+        workers : int, optional
+            Optional number of workers to use for parallel processing in the
+            cKDTree step. If -1 is given all CPU threads are used. Default: 1. 
 
         Returns
         -------
@@ -565,13 +565,18 @@ class PandasExtension:
         crds1 = df1[[x1, y1]].values
         crds2 = df2[[x2, y2]].values
 
+        # If df2 has fewer than k entries
+        if df2.shape[0] < k:
+            k = df2.shape[0]
+
         # Build the connections tree and query points from the first df
         tree = cKDTree(crds2)
-        if no_repeat:
-            dist, idx = tree.query(crds1, k=k)
-            # dist, idx = self._derepeat(dist, idx)  # Where did _derepeat go?
-        else:
-            dist, idx = tree.query(crds1, k=1)
+        dist, idx = tree.query(crds1, k=k, workers=workers)
+
+        # Use the original index of df2 for these indices
+        index = np.array(df2.index)
+        imap = dict(zip(np.arange(0, df2.shape[0], 1), df2.index))
+        idx = np.vectorize(lambda x: imap[x])(idx)  # Faster way?
 
         # We might be relacing a column
         for field in fields:
@@ -580,12 +585,34 @@ class PandasExtension:
 
         # Rebuild the dataset
         dfa = df1.reset_index(drop=True)
-        dfb = df2.iloc[idx, :]
-        dfb = dfb.reset_index(drop=True)
-        df = pd.concat([dfa, dfb[fields], pd.Series(dist, name='dist')],
-                       axis=1)
+        if k == 1:
+            dfb = df2.iloc[idx, :]
+            dfb = dfb.reset_index(drop=True)
+            dfa = pd.concat([dfa, dfb[fields], pd.Series(dist, name='dist')],
+                           axis=1)
+        else:
+            # Assign collections of distances
+            dist_df = pd.DataFrame(dist)
+            idx_df = pd.DataFrame(idx)
+            dist_lists = dist_df.apply(self._collect, dist_max=dist_max,
+                                       axis=1)
+            idx_lists = idx_df.apply(self._collect, dist_max=None,
+                                     axis=1)
 
-        return df
+            dfa.loc[:, "dist_list"] = dist_lists.values
+            dfa.loc[:, "idx_list"] = idx_lists.values
+            if dist_max:
+                dfa["len"] = dfa["dist_list"].apply(lambda x: len(x))
+                dfa["idx_list"] = dfa.apply(
+                    lambda x: x["idx_list"][: x["len"]],
+                    axis=1
+                )
+                del dfa["len"]
+
+            dfa["dist_list"] = dfa["dist_list"].apply(json.dumps)
+            dfa["idx_list"] = dfa["idx_list"].apply(json.dumps)
+
+        return dfa
 
     # def papply(self, func, **kwargs):
     #     """Apply a function to a dataframe in parallel chunks."""
@@ -702,6 +729,12 @@ class PandasExtension:
                 raise
 
         return array, dtypes
+
+    def _collect(self, row, dist_max=None):
+        """Return list of values in a pandas series."""
+        if dist_max:  # Don't specify if not collecting distance
+            row = row[row <= dist_max]
+        return list(row)
 
     def _delist(self, value):
         """Extract the value of an object if it is a list with one value."""

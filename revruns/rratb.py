@@ -302,6 +302,29 @@ class ATB:
         df = self._filter(df, res_class=res_class, tech=tech)
         return df["value"]
 
+    def fcr(self, res_class=None, tech=None):
+        """Return fcr for given tech and year.
+
+        Parameters
+        ----------
+        res_class : int
+            Resource class number from 1 to 10. Defaults to class 1.
+        tech : int
+            Technology subclass selection number. New for wind in 2023 since
+            there are now several different turbines that are appropriate for
+            different resource classes. Ranges from 1 to 4.
+
+        Returns
+        -------
+        float : Value representing fixed charge rate for the given
+                year, technology, resource class, scenario, and technology
+                sub-class.
+        """
+        df = self.data.copy()
+        df = df[df["core_metric_parameter"] == "FCR"]
+        df = self._filter(df, res_class=res_class, tech=tech)
+        return df["value"]
+
     @classmethod
     @property
     def technologies(cls):
@@ -318,7 +341,10 @@ class ATB:
 
     def _filter(self, df, tech=None, res_class=None):
         if not res_class and not tech:
-            df = df[df["techdetail"].str.endswith("1")].iloc[0]
+            if df[df["techdetail"].str.endswith("1")].empty:
+                df = df[df["techdetail"].str.endswith("*")].iloc[0]
+            else:
+                df = df[df["techdetail"].str.endswith("1")].iloc[0]
         if res_class:
             df = df[df["techdetail"] .str.endswith(f"{res_class}")].iloc[0]
         if tech:
