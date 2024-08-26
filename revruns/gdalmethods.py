@@ -28,6 +28,7 @@ import numpy as np
 import rasterio
 import requests
 
+from osgeo import gdal_array
 from multiprocessing import Pool
 from osgeo import gdal, ogr, osr
 from shapely.geometry import Point
@@ -107,6 +108,11 @@ GDAL_TYPEMAP = {
         "type": gdal.GDT_UInt32,
         "min": np.iinfo("uint32").min,
         "max": np.iinfo("uint32").max
+    },
+    "uint64": {
+        "type": gdal.GDT_UInt64,
+        "min": np.iinfo("uint64").min,
+        "max": np.iinfo("uint64").max
     },
     "unknown": {
         "type": gdal.GDT_Unknown,
@@ -425,6 +431,8 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
     # Open shapefile, retrieve the layer
     src_data = ogr.Open(src)
     layer = src_data.GetLayer()
+    type_code = layer[0].GetFieldType(attribute)
+    dtype = [k for k, v in GDAL_TYPEMAP.items() if v["type"] == type_code][0]
 
     # Create a spatial reference object
     refs = osr.SpatialReference()
@@ -466,7 +474,7 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
         except KeyError:
             print("\n'" + dtype + "' is not an available data type. "
                   "Choose a value from this list:")
-            print(str(list(GDAL_TYPEMAP.keys())))     
+            print(str(list(GDAL_TYPEMAP.keys())))
 
     # Set the nodata value to the maximum datatype value
     if not navalue:
