@@ -9,12 +9,12 @@ Note that rasterize partial was adjusted from:
 """
 import datetime as dt
 import json
+import multiprocessing as mp
 import os
 import psutil
 import shutil
 import tempfile
 import warnings
-import pathos.multiprocessing as mp
 
 from pathlib import Path, PosixPath
 
@@ -25,12 +25,13 @@ import pandas as pd
 import pyproj
 import rasterio as rio
 
-from pyproj import CRS, Transformer
+from pyogrio.errors import DataSourceError
+from pyproj import CRS
 from rasterio import features
 from rasterio.merge import merge
 from shapely import geometry
-from shapely.ops import cascaded_union
-from tqdm import tqdm
+from shapely.ops import unary_union
+from tqdm.auto import tqdm
 
 from revruns.gdalmethods import warp
 from revruns.rr import crs_match, isint, isfloat
@@ -100,7 +101,7 @@ class Rasterizer:
     """Methods for rasterizing vectors."""
 
     def __init__(self, flip=False, resolution=90, crs="esri:102008",
-                 template=None, temp_dir=None):
+                 template=None, temp_dir=None, n_chunks=500):
         """Initialize Rasterize object.
 
         Parameters
@@ -118,6 +119,13 @@ class Rasterizer:
         self.resolution = resolution
         self.crs = crs
         self.flip = flip
+        self.n_chunks = n_chunks
+
+    def __repr__(self):
+        """Return Rasterizer representation string."""
+        attrs = [f"{k}={v}" for k, v in self.__dict__.items() if k != "inputs"]
+        pattrs = ", ".join(attrs)
+        return f"<Rasterizer: {pattrs}>"
 
     def rasterize_partial(self, src, dst):
         """Rasterize full vector dataset using percent coverage.
@@ -135,15 +143,18 @@ class Rasterizer:
             format. Will default to crs of src if not provided.
         """
         # Read in source dataset
-        if isinstance(src, str):
-            df = gpd.read_file(src)
+        if isinstance(src, str) | isinstance(src, PosixPath):
+            try:
+                df = gpd.read_file(src)
+            except DataSourceError:
+                df = gpd.read_parquet(src)
         else:
             df = src
 
         # Set up temporary directory
         if not self.temp_dir:
             self.temp_dir = Path(dst).parent.joinpath("tmp")
-            self.temp_dir.mkdir(exist_ok=True)
+        self.temp_dir.mkdir(exist_ok=True, parents=True)
         files = list(self.temp_dir.glob("*tif"))
         if files:
             for file in files:
@@ -161,11 +172,9 @@ class Rasterizer:
         if CRS(self.crs).to_wkt() != df.crs.to_wkt():  # Fails if not found
             df = df.to_crs(self.crs)
 
-        # Comine arguments for multiprocessing routine
-        arg_list = self._get_args(df)
-
         # Run partial rasterization
         tmps = []
+        arg_list = self._get_args(df)
         with mp.Pool(mp.cpu_count() - 1) as pool:
             for tmp in tqdm(pool.imap(self._rasterize_partial, arg_list),
                             total=len(arg_list)):
@@ -253,7 +262,7 @@ class Rasterizer:
         # The smaller the better for memory, note system open file limits
         nrows = df.shape[0]
         nsplit = np.ceil(nrows / mp.cpu_count())
-        nchunks = np.min([nrows, nsplit, 1_000])
+        nchunks = np.min([nrows, nsplit, self.n_chunks])
 
         # Option #1: Split data frame into spatially neighboring grid cells
         # df = grid_chunks(df, nchunks)
@@ -300,7 +309,7 @@ class Rasterizer:
                 x += size
             x = xmin
             y += size
-     
+
         grid = gpd.GeoDataFrame(array, columns=["geometry"], crs=df.crs)
         grid["grid"] = grid.index
         df = gpd.sjoin(df, grid)
@@ -310,11 +319,17 @@ class Rasterizer:
     def _rasterize(self, geom, shape, transform, exterior=False):
         """Rasterize a single geometry."""
         # Build shapes and account for multipolygons
-        if exterior:
-            shapes = [(g.exterior, 1) for g in geom]
+        if isinstance(geom, geometry.MultiPolygon):
+            if exterior:
+                shapes = [(g.exterior, 1) for g in geom.geoms]
+            else:
+                shapes = [(g, 1) for g in geom.geoms]
         else:
-            shapes = [(g, 1) for g in geom]
-        
+            if exterior:
+                shapes = [(g.exterior, 1) for g in geom]
+            else:
+                shapes = [(g, 1) for g in geom]
+
         # Build array
         array = rio.features.rasterize(
             shapes=shapes,
@@ -332,9 +347,9 @@ class Rasterizer:
         geom, transform, shape = args
 
         # Create single geometry
-        geom = cascaded_union(geom)
+        geom = unary_union(geom)
 
-        # Create full and boundary arrays
+        # Create full and boundary arrays (inside and outline of shape)
         full = self._rasterize(geom, shape, transform)
         boundary = self._rasterize(geom, shape, transform, exterior=True)
 
@@ -359,7 +374,7 @@ class Rasterizer:
 
         tmp = next(tempfile._get_candidate_names())
         dst = str(self.temp_dir.joinpath(tmp + ".tif"))
-        with rio.open(dst, 'w', **profile) as file:
+        with rio.open(dst, "w", **profile) as file:
             file.write(partial, 1)
 
         return dst
@@ -411,7 +426,7 @@ class Exclusions:
         dtype = profile["dtype"]
         profile = dict(profile)
 
-        # We need a 6 element geotransform, sometimes we receive three extra <- why?
+        # We need a 6 element geotransform, sometimes we receive three extra
         profile["transform"] = profile["transform"][:6]
 
         # Add coordinates and else check that the new file matches everything
@@ -475,49 +490,18 @@ class Exclusions:
             description = desc_dict[dname]
             self.add_layer(dname, file, description, overwrite=overwrite)
 
-    def techmap(self, res_fpath, dname, max_workers=None, map_chunk=2560,
-                distance_upper_bound=None, save_flag=True):
-        """Build a mapping grid between exclusion resource data.
-
-        Parameters
-        ----------
-        res_fpath : str
-            Filepath to HDF5 resource file.
-        dname : str
-            Dataset name in excl_fpath to save mapping results to.
-        max_workers : int, optional
-            Number of cores to run mapping on. None uses all available cpus.
-            The default is None.
-        distance_upper_bound : float, optional
-            Upper boundary distance for KNN lookup between exclusion points and
-            resource points. None will calculate a good distance based on the
-            resource meta data coordinates. 0.03 is a good value for a 4km
-            resource grid and finer. The default is None.
-        map_chunk : TYPE, optional
-          Calculation chunk used for the tech mapping calc. The default is
-            2560.
-        save_flag : boolean, optional
-            Save the techmap in the excl_fpath. The default is True.
-        """
-        from reV.supply_curve.tech_mapping import TechMapping
-
-        # If saving, does it return an object?
-        arrays = TechMapping.run(self.excl_fpath, res_fpath, dname,
-                                 max_workers=None, sc_resolution=2560)
-        return arrays
-
     def _check_dims(self, path):
         # Check new layers against the first6 added raster
         if self.profile is not None:
             old = self.profile
             dname = os.path.basename(path)
-            with rio.open(path, "r") as r:    
+            with rio.open(path, "r") as r:
                 new = r.profile
 
             # Check the CRS
             if not crs_match(old["crs"], new["crs"]):
                 raise AssertionError(f"CRS for {dname} does not match "
-                                      "exisitng CRS.")
+                                     "exisitng CRS.")
 
             # Check the transform
             try:
@@ -535,7 +519,7 @@ class Exclusions:
                 assert old["height"] == new["height"]
             except AssertionError:
                 print(f"Width and/or height for {dname} does not match "
-                       "existing dimensions.")
+                      "existing dimensions.")
                 raise
 
     def _convert_coords(self, xs, ys):
@@ -555,7 +539,7 @@ class Exclusions:
         # transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
         # lons, lats = transformer.transform(mx, my)
 
-        #Added because original takes lots of memory for higher resolution
+        # Added because original takes lots of memory for higher resolution
         min_x, max_x = np.min(xs), np.max(xs)
         min_y, max_y = np.min(ys), np.max(ys)
 
@@ -570,10 +554,12 @@ class Exclusions:
         }, geometry=corners, crs=crs)
         gdf = gdf.to_crs(tcrs)
 
-        x_corners, y_corners = zip(*[(point.x, point.y) for point in gdf.geometry])
-
-        x_trans = np.linspace(np.min(x_corners), np.max(x_corners), num=len(xs), dtype="float32")
-        y_trans = np.linspace(np.min(y_corners), np.max(y_corners), num=len(ys), dtype="float32")
+        x_corners, y_corners = zip(*[(point.x, point.y)
+                                     for point in gdf.geometry])
+        x_trans = np.linspace(np.min(x_corners), np.max(x_corners),
+                              num=len(xs), dtype="float32")
+        y_trans = np.linspace(np.min(y_corners), np.max(y_corners),
+                              num=len(ys), dtype="float32")
 
         lons, lats = np.meshgrid(x_trans, y_trans)
 
@@ -612,7 +598,7 @@ class Exclusions:
             with h5py.File(self.excl_fpath, "r+") as ds:
                 for akey, attr in self.attrs.items():
                     if isinstance(attr, (list, dict)):
-                        attr = json.dumps(attr) 
+                        attr = json.dumps(attr)
                     ds.attrs[akey] = attr
 
     def _preflight(self):
@@ -700,9 +686,9 @@ class Reformatter(Exclusions):
             Dictionary or path dictionary of raster value, key pairs
             derived from shapefiles containing string values (optional).
         multithread : boolean
-            Use mutlithreading in each GDAL process (all available threads). 
+            Use mutlithreading in each GDAL process (all available threads).
         parallel : boolean
-             Process each dataset in parallel (all cores - 1). 
+             Process each dataset in parallel (all cores - 1).
         gdal_cache_max : int
             Maximum cache storage in MW. If not set, it uses the GDAL default.
         """
@@ -805,7 +791,7 @@ class Reformatter(Exclusions):
         if not os.path.exists(path):
             raise OSError(f"{path} does not exist.")
 
-        # If theres no template, make sure it matches the excl file  <--------- Still thinking how i want this to work
+        # If theres no template, make sure it matches the excl file
         # if self.template is not None:
         #     try:
         #         self._check_dims(path)
@@ -974,7 +960,7 @@ class Reformatter(Exclusions):
 
         # Update the string lookup dictionary
         self.lookup[layer_name] = string_map
-    
+
         return gdf
 
     def _process_vector(self, name, path, field=None, buffer=None):

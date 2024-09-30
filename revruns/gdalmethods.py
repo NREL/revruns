@@ -28,7 +28,6 @@ import numpy as np
 import rasterio
 import requests
 
-from osgeo import gdal_array
 from multiprocessing import Pool
 from osgeo import gdal, ogr, osr
 from shapely.geometry import Point
@@ -209,7 +208,7 @@ def gdal_options(module="translate", **kwargs):
     gdal options object | list:
         An list of strings describing available options and their descriptions
         or a gdal options object.
-        
+
     Example
     --------
         gdal_options("warp")
@@ -279,7 +278,7 @@ def creation_options(module, **kwargs):
     -------
     list:
         An list of strings describing available options and their descriptions.
-        
+
     Examples
     --------
         creation_options("warp")
@@ -394,7 +393,7 @@ def rasterize(src, dst, attribute, t_srs=None, transform=None, xres=None,
     creation_ops : dict
         A dictionary of creation option keys and values (optional).
     multithread : boolean
-        Use all cores minus one. 
+        Use all cores minus one.
     cache_max : int
         Maximum cache storage in MW. If not set, it uses the GDAL default.
     progress : boolean
@@ -934,7 +933,7 @@ def translate(src, dst, overwrite=False, compress=None, creation_ops=None,
         A compression technique. Available options are "DEFLATE", "JPEG",
         "LZW"
     creation_ops : dict | None
-        Dictionary of creation options. 
+        Dictionary of creation options.
     **kwargs
         Any available key word arguments for gdal_translate. Available options
         and descriptions can be found using gdal_options("translate").
@@ -1057,7 +1056,7 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     creation_ops : dict
         A dictionary of creation option keys and values (optional).
     multithread : boolean
-        Use all cores minus one. 
+        Use all cores minus one.
     cache_max : int
         Maximum cache storage in MW. If not set, it uses the GDAL default.
     progress : boolean
@@ -1085,7 +1084,7 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     src = str(src)
     dst = str(dst)
 
-    # Open source data set for inherited parameters    
+    # Open source data set for inherited parameters
     source = gdal.Open(src)
 
     # Create a spatial reference object
