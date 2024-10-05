@@ -14,8 +14,10 @@ import os
 import psutil
 import shutil
 import tempfile
+import time
 import warnings
 
+from multiprocessing import current_process
 from pathlib import Path, PosixPath
 
 import geopandas as gpd
@@ -43,22 +45,33 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 NEEDED_FIELDS = ["name", "path"]
 
 
-def grid_chunks(df, nchunks):
-    """Create a grid to split a geodataframe into roughly `nchunks` parts."""
+def grid_chunks(df, chunk_size=10_000):
+    """Create a grid to split a geodataframe into roughly `nchunks` parts.
+
+    Parameters
+    ----------
+    df : pd.core.frame.DataFrame
+        A pandas data frame of features to rasterize.
+    chunk_size : int
+        Chunk side size in meters to use to split `df` for multiprocessing.
+
+    Returns
+    -------
+    pd.core.frame.DataFrame : A data frame split into chunks according to the
+        `chunk_size` argument.
+    """
     # Polygon Size
     xmin, ymin, xmax, ymax = df.total_bounds
     width = xmax - xmin
     height = ymax - ymin
 
     # Needed number of cells in each direction
-    yratio = height / width
-    xratio = width / height
-    nx = np.ceil(np.sqrt(nchunks) * xratio)
-    ny = np.ceil(np.sqrt(nchunks) * yratio)
+    nx = np.ceil(width / chunk_size)
+    ny = np.ceil(height / chunk_size)
 
     # Each cell distance
     ysize = height / ny
-    xsize = height / nx
+    xsize = width / nx
 
     # Build grid geometry
     x = xmin
@@ -82,13 +95,8 @@ def grid_chunks(df, nchunks):
     grid = gpd.GeoDataFrame(array, columns=["geometry"], crs=df.crs)
     grid["grid"] = grid.index
 
-    # Use the centriods to join with grid
-    df["geometry1"] = df["geometry"]
-    df["geometry"] = df["geometry1"].centroid
-    df = gpd.sjoin(df, grid, op="within", how="left")
-    df["geometry"] = df["geometry1"]
-    del df["geometry1"]
-    del df["index_right"]
+    # Cut the input geometries by this grid
+    df = gpd.overlay(df, grid, how="intersection")
 
     return df
 
@@ -101,7 +109,7 @@ class Rasterizer:
     """Methods for rasterizing vectors."""
 
     def __init__(self, flip=False, resolution=90, crs="esri:102008",
-                 template=None, temp_dir=None, n_chunks=500):
+                 template=None, temp_dir=None, chunk_size=10_000):
         """Initialize Rasterize object.
 
         Parameters
@@ -113,13 +121,15 @@ class Rasterizer:
         flip : boolean
             Reverse values such that 1 represent cells outside of vector and
             0 represent within.
+        chunk_size : int
+            Chunk side size in meters to use to split `df` for multiprocessing.
         """
         self.template = template
         self.temp_dir = temp_dir
         self.resolution = resolution
         self.crs = crs
         self.flip = flip
-        self.n_chunks = n_chunks
+        self.chunk_size = chunk_size
 
     def __repr__(self):
         """Return Rasterizer representation string."""
@@ -127,119 +137,29 @@ class Rasterizer:
         pattrs = ", ".join(attrs)
         return f"<Rasterizer: {pattrs}>"
 
-    def rasterize_partial(self, src, dst):
-        """Rasterize full vector dataset using percent coverage.
-
-        Parameters
-        ----------
-        src : str | gpd.geodataframe.GeoDataFrame
-            Path to source vector dataset file or geodataframe.
-        dst : str
-            Path to destination GeoTiff file.
-        resolution : int
-            Target raster Resolution in units of src.
-        crs : str
-            Coordinate reference system of target GeoTiff. Use "epsg:<code>"
-            format. Will default to crs of src if not provided.
-        """
-        # Read in source dataset
-        if isinstance(src, str) | isinstance(src, PosixPath):
-            try:
-                df = gpd.read_file(src)
-            except DataSourceError:
-                df = gpd.read_parquet(src)
-        else:
-            df = src
-
-        # Set up temporary directory
-        if not self.temp_dir:
-            self.temp_dir = Path(dst).parent.joinpath("tmp")
-        self.temp_dir.mkdir(exist_ok=True, parents=True)
-        files = list(self.temp_dir.glob("*tif"))
-        if files:
-            for file in files:
-                os.remove(file)
-
-        # Read in template information
-        if self.template:
-            with rio.open(self.template) as r:
-                profile = r.profile
-                self.crs = CRS(profile["crs"])
-
-        # Set crs and project if needed
-        if not self.crs:
-            self.crs = df.crs
-        if CRS(self.crs).to_wkt() != df.crs.to_wkt():  # Fails if not found
-            df = df.to_crs(self.crs)
-
-        # Run partial rasterization
-        tmps = []
-        arg_list = self._get_args(df)
-        with mp.Pool(mp.cpu_count() - 1) as pool:
-            for tmp in tqdm(pool.imap(self._rasterize_partial, arg_list),
-                            total=len(arg_list)):
-                tmps.append(tmp)
-
-        # If template, use its bounds
-        if self.template:
-            with rio.open(self.template) as r:
-                bounds = tuple(r.bounds)
-        else:
-            bounds = None
-
-        # Merge individual temporary rasters
-        nopen = len(fopen())
-        print(f"Open files: {nopen}")
-        datasets = [rio.open(tmp) for tmp in tmps]
-        array, transform = merge(
-            datasets,
-            bounds=bounds,
-            res=self.resolution,
-            method="max"
-        )
-        array = array[0]
-
-        # Flip values if requested
-        if self.flip:
-            array = (array - 1) * -1
-
-        # Write to GeoTiff
-        if not self.template:
-            profile = {
-                'transform': transform,
-                'height': array.shape[0],
-                'width': array.shape[1],
-                'count': 1,
-                'crs': self.crs,
-                'driver': 'GTiff',
-                'dtype': 'float32',
-                'nodata': None,
-                'tiled': False
-            }
-        else:
-            profile["dtype"] = str(array.dtype)
-
-        with rio.open(dst, 'w', **profile) as file:
-            file.write(array, 1)
-
-        # Close and remove temporary files
-        for dataset in datasets:
-            dataset.close()
-        shutil.rmtree(self.temp_dir)
-
-    def _bounds(self, geom):
+    def _bounds(self, geom_list):
         """Return the bounds of a geometry."""
-        bounds = np.array([g.bounds for g in geom])
+        bounds = np.array([g.bounds for g in geom_list])
         xmin = bounds[:, 0].min()
         ymin = bounds[:, 1].min()
         xmax = bounds[:, 2].max()
         ymax = bounds[:, 3].max()
         return xmin, ymin, xmax, ymax
 
+    def _consolidate_vectors(self, fpaths):
+        """Combine multiple vector files into one geodataframe."""
+        dfs = [gpd.read_parquet(fpath) for fpath in fpaths]
+        df = pd.concat(dfs)
+        return df
+
     def _exterior_ratio(self, partial, boundary, geom, transform):
         """Calculate the coverage ratio for exterior cells of an array."""
+        current = current_process()
         idx = np.where(boundary == 1)
-        for r, c in zip(*idx):
+        for r, c in tqdm(zip(*idx), total=len(idx[0]),
+                         desc=str(current.name),
+                         position=current._identity[0] - 1):
+        # for r, c in zip(*idx):
             # Find cell bounds
             window = ((r, r + 1), (c, c + 1))
             ((row_min, row_max), (col_min, col_max)) = window
@@ -250,41 +170,57 @@ class Rasterizer:
             # Construct shapely geometry of cell and intersect with geometry
             cell = geometry.box(*bounds)
             overlap = cell.intersection(geom)
-
-            # update pctcover with percentage based on area proportion
-            ratio = (overlap.area / cell.area)
-            partial[r, c] = ratio
+            overlap = [g for g in overlap if not g.is_empty]
+            if overlap:
+                if len(overlap) > 1:
+                    overlap = unary_union(overlap)
+                else:
+                    overlap = overlap[0]
+                ratio = (overlap.area / cell.area)
+                partial[r, c] = ratio
 
         return partial
 
-    def _get_args(self, df):
-        """Get arguments for multiprocessing."""
-        # The smaller the better for memory, note system open file limits
-        nrows = df.shape[0]
-        nsplit = np.ceil(nrows / mp.cpu_count())
-        nchunks = np.min([nrows, nsplit, self.n_chunks])
+    def _get_args(self, df, chunk_size=10_000):
+        """Get arguments for multiprocessing.
 
+        Parameters
+        ----------
+        df : pd.core.frame.DataFrame
+            A pandas data frame of features to rasterize.
+        chunk_size : int
+            Chunk side size in meters to use to split `df` for multiprocessing.
+
+        Returns
+        -------
+        list : A list of argument values for `_rasterize` or
+            `_rasterize_partial`.
+        """
         # Option #1: Split data frame into spatially neighboring grid cells
-        # df = grid_chunks(df, nchunks)
-        # geoms = [list(g[1]) for g in df.groupby("grid")["geometry"]]
-
-        # Option 2: Split linearly
-        df["x"] = df["geometry"].centroid.x
-        df["y"] = df["geometry"].centroid.y
-        df = df.sort_values(["x", "y"])
-        geoms = np.array_split(df["geometry"].values, nchunks)
+        df = grid_chunks(df, chunk_size=chunk_size)
+        geometries = []
+        for group in df.groupby("grid")["geometry"]:
+            geom_series = group[1]
+            geom_list = []
+            for geom in geom_series:
+                if isinstance(geom, geometry.MultiPolygon):
+                    for part in geom.geoms:
+                        geom_list.append(part)
+                else:
+                    geom_list.append(geom)
+            geometries.append(geom_list)
 
         # Build argument list
         arg_list = []
-        for geom in geoms:
+        for geom_list in geometries:
             # Unpack target geometry
-            xmin, ymin, xmax, ymax = self._bounds(geom)
-            height, width = self._shape(geom)
+            xmin, ymin, xmax, ymax = self._bounds(geom_list)
+            height, width = self._shape(geom_list)
             shape = (height, width)
             transform = rio.transform.from_bounds(
                 xmin, ymin, xmax, ymax, width, height
             )
-            arg_list.append((geom, transform, shape))
+            arg_list.append((geom_list, transform, shape))
 
         return arg_list
 
@@ -341,13 +277,134 @@ class Rasterizer:
 
         return array
 
+    def rasterize_partial(self, src, dst):
+        """Rasterize full vector dataset using percent coverage.
+
+        Parameters
+        ----------
+        src : str | list | gpd.geodataframe.GeoDataFrame 
+            Path to source vector dataset file or list to such paths or a
+            geodataframe.
+        dst : str | pathlib.PosixPath
+            Path to destination GeoTiff file.
+        resolution : int
+            Target raster resolution in units of the src projection.
+        crs : str
+            Coordinate reference system of target GeoTiff. Use "epsg:<code>"
+            format. Will default to crs of src if not provided.
+        """
+        # Start the timer
+        start = time.time()
+
+        # Read in source dataset
+        if isinstance(src, (str, PosixPath)):
+            try:
+                print(f"Reading in {src}...")
+                df = gpd.read_file(src)
+            except DataSourceError:
+                df = gpd.read_parquet(src)
+        elif isinstance(src, (list, tuple)):
+            print(f"Reading and consolidating {len(src)} files...")
+            df = self._consolidate_vectors(src)
+        else:
+            df = src
+        df = df.explode()
+
+        # Set up temporary directory
+        if not self.temp_dir:
+            self.temp_dir = Path(dst).parent.joinpath("tmp")
+        self.temp_dir.mkdir(exist_ok=True, parents=True)
+        files = list(self.temp_dir.glob("*tif"))
+        if files:
+            for file in files:
+                os.remove(file)
+
+        # Read in template information
+        if self.template:
+            print("Reading template information...")
+            with rio.open(self.template) as r:
+                profile = r.profile
+                self.crs = CRS(profile["crs"])
+
+        # Set crs and project if needed
+        print("Setting coordinate reference information...")
+        if not self.crs:
+            self.crs = df.crs
+        if CRS(self.crs).to_wkt() != df.crs.to_wkt():  # Fails if not found
+            df = df.to_crs(self.crs)
+
+        # Chunk data frame and return argument list
+        print("Chunking data frame...")
+        arg_list = self._get_args(df, chunk_size=self.chunk_size)
+
+        # Run partial rasterization
+        print(f"Performing rasterization on {len(arg_list)} chunks...")
+        tmps = []
+        with mp.Pool(mp.cpu_count() - 1) as pool:
+            for tmp in tqdm(pool.imap(self._rasterize_partial, arg_list),
+                            total=len(arg_list)):
+                tmps.append(tmp)
+
+        # If template, use its bounds
+        if self.template:
+            with rio.open(self.template) as r:
+                bounds = tuple(r.bounds)
+        else:
+            bounds = None
+
+        # Merge individual temporary rasters
+        print("Merging rasterized arrays...")
+        nopen = len(fopen())
+        print(f"Open files: {nopen}")
+        datasets = [rio.open(tmp) for tmp in tmps]
+        array, transform = merge(
+            datasets,
+            bounds=bounds,
+            res=self.resolution,
+            method="max"
+        )
+        array = array[0]
+
+        # Flip values if requested
+        if self.flip:
+            print("Flipping values...")
+            array = (array - 1) * -1
+
+        # Write to GeoTiff
+        if not self.template:
+            profile = {
+                "transform": transform,
+                "height": array.shape[0],
+                "width": array.shape[1],
+                "count": 1,
+                "crs": self.crs,
+                "driver": "GTiff",
+                "dtype": "float32",
+                "nodata": None,
+                "tiled": False
+            }
+        else:
+            profile["dtype"] = str(array.dtype)
+
+        print(f"Writing output to {dst}...")
+        with rio.open(dst, "w", **profile) as file:
+            file.write(array, 1)
+
+        # Close and remove temporary files
+        print(f"Closing and removing temporary files...")
+        for dataset in datasets:
+            dataset.close()
+        shutil.rmtree(self.temp_dir)
+
+        # Print runtime
+        end = time.time()
+        duration = round((end - start) / 60, 2)
+        print(f"Finished, {duration} minutes")
+
     def _rasterize_partial(self, args):
         """Rasterize geometry with percent coverage for partial cells."""
         # Unpack arguments
         geom, transform, shape = args
-
-        # Create single geometry
-        geom = unary_union(geom)
 
         # Create full and boundary arrays (inside and outline of shape)
         full = self._rasterize(geom, shape, transform)
@@ -361,15 +418,15 @@ class Rasterizer:
 
         # Save to temporary file
         profile = {
-            'transform': transform,
-            'height': shape[0],
-            'width': shape[1],
-            'count': 1,
-            'crs': self.crs,
-            'driver': 'GTiff',
-            'dtype': 'float32',
-            'nodata': None,
-            'tiled': False
+            "transform": transform,
+            "height": shape[0],
+            "width": shape[1],
+            "count": 1,
+            "crs": self.crs,
+            "driver": "GTiff",
+            "dtype": "float32",
+            "nodata": None,
+            "tiled": False
         }
 
         tmp = next(tempfile._get_candidate_names())
@@ -908,7 +965,7 @@ class Reformatter(Exclusions):
         vectors = {}
         for name, attrs in self.inputs.items():
             if not os.path.exists(attrs["path"]):
-                raise OSError(f"{attrs['path']} does not exist.")
+                raise OSError(f"{attrs["path"]} does not exist.")
             if str(attrs["path"]).split(".")[-1] in ["gpkg", "shp", "geojson"]:
                 vectors[name] = attrs
         return vectors
@@ -1038,3 +1095,15 @@ class Reformatter(Exclusions):
         if self.excl_fpath:
             print(f"Building/updating exclusion {self.excl_fpath}...")
             self.to_h5()
+
+
+if __name__ == "__main__":
+    from rev_naerm import HPCDATA, HOMEDATA
+
+    TEMPLATE = HOMEDATA.joinpath("rasters/template_ri.tif")
+    DATA = HOMEDATA.joinpath("vectors/tmp")
+
+    self = Rasterizer(template=TEMPLATE)
+    src = list(HOMEDATA.joinpath("vectors/tmp_processed/rhode_island/").glob("*parquet"))
+    dst = HOMEDATA.joinpath("rasters/tests/rasterize_test_ri.tif")
+    self.rasterize_partial(src, dst)
