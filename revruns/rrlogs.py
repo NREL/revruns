@@ -75,6 +75,7 @@ CONFIG_DICT = {
     "aggregation": "config_aggregation.son",
     "supply-curve": "config_supply-curve.json",
     "rep-profiles": "config_rep-profiles.json",
+    "hybrids": "config_hybrids.json",
     "script": "config_script.json",
     "nrwal": "config_nrwal.json",
     "qaqc": "config_qaqc.json"
@@ -89,6 +90,7 @@ MODULE_NAMES = {
     "aggregation": "supply-curve-aggregation",
     "supply-curve": "supply-curve",
     "rep-profiles": "rep-profiles",
+    "hybrids": "hybrids",
     "nrwal": "nrwal",
     "script": "script",
     "qaqc": "qa-qc",

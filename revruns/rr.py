@@ -554,7 +554,8 @@ class PandasExtension:
                 df1[y1] = df1["geometry"].y
             else:
                 y1, x1 = self.find_coords(df1)
-            if isinstance(df1, gpd.geodataframe.GeoDataFrame):
+
+            if isinstance(df2, gpd.geodataframe.GeoDataFrame):
                 x2 = "x"
                 y2 = "y"
                 df2[x2] = df2["geometry"].x
@@ -570,8 +571,8 @@ class PandasExtension:
             fields = [c for c in df2 if c not in [x2, y2, "geometry"]]
 
         # Get arrays of point coordinates
-        crds1 = df1[[x, y]].values
-        crds2 = df2[[x, y]].values
+        crds1 = df1[[x1, y1]].values
+        crds2 = df2[[x2, y2]].values
 
         # If df2 has fewer than k entries
         if df2.shape[0] < k:
