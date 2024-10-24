@@ -156,10 +156,9 @@ class Rasterizer:
         """Calculate the coverage ratio for exterior cells of an array."""
         current = current_process()
         idx = np.where(boundary == 1)
-        for r, c in tqdm(zip(*idx), total=len(idx[0]),
-                         desc=str(current.name),
+        for r, c in tqdm(zip(*idx), total=len(idx[0]), desc=str(current.name),
                          position=current._identity[0] - 1):
-        # for r, c in zip(*idx):
+
             # Find cell bounds
             window = ((r, r + 1), (c, c + 1))
             ((row_min, row_max), (col_min, col_max)) = window
@@ -391,7 +390,7 @@ class Rasterizer:
             file.write(array, 1)
 
         # Close and remove temporary files
-        print(f"Closing and removing temporary files...")
+        print("Closing and removing temporary files...")
         for dataset in datasets:
             dataset.close()
         shutil.rmtree(self.temp_dir)
