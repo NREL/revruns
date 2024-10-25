@@ -9,7 +9,6 @@ Note that rasterize partial was adjusted from:
 """
 import datetime as dt
 import json
-import multiprocessing as mp
 import os
 import psutil
 import shutil
@@ -17,13 +16,19 @@ import tempfile
 import time
 import warnings
 
-from multiprocessing import current_process
+from functools import cached_property
+from concurrent.futures import (
+    as_completed,
+    ThreadPoolExecutor,
+    ProcessPoolExecutor
+)
 from pathlib import Path, PosixPath
 
 import geopandas as gpd
 import h5py
 import numpy as np
 import pandas as pd
+import pathos.multiprocessing as mp
 import pyproj
 import rasterio as rio
 
@@ -108,12 +113,16 @@ def fopen():
 class Rasterizer:
     """Methods for rasterizing vectors."""
 
-    def __init__(self, flip=False, resolution=90, crs="esri:102008",
-                 template=None, temp_dir=None, chunk_size=10_000):
+    def __init__(self, src, flip=False, resolution=90, crs="esri:102008",
+                 template=None, temp_dir=None, chunk_size=10_000,
+                 progress="main"):
         """Initialize Rasterize object.
 
         Parameters
         ----------
+        src : str | list | gpd.geodataframe.GeoDataFrame
+            Path to source vector dataset file or list to such paths or a
+            geodataframe.
         template : str
             Path to template raster used for grid geometry. Optional.
         temp_dir : str
@@ -123,13 +132,22 @@ class Rasterizer:
             0 represent within.
         chunk_size : int
             Chunk side size in meters to use to split `df` for multiprocessing.
+        progress : str
+            Control for progress bar displays. `None` for no progress bar,
+            "main" for one main process progress bar, "all" for all sub-process
+            progress bars.
         """
+        self.src = src
         self.template = template
         self.temp_dir = temp_dir
         self.resolution = resolution
         self.crs = crs
         self.flip = flip
         self.chunk_size = chunk_size
+        self.progress = progress
+
+        # Set georeferencing, read and process the source data
+        self._preflight()
 
     def __repr__(self):
         """Return Rasterizer representation string."""
@@ -146,42 +164,112 @@ class Rasterizer:
         ymax = bounds[:, 3].max()
         return xmin, ymin, xmax, ymax
 
+    def _clear_temp(self):
+        """Delete temporary files."""
+        files = list(self.temp_dir.glob("*tif"))
+        if files:
+            for file in files:
+                os.remove(file)
+
     def _consolidate_vectors(self, fpaths):
         """Combine multiple vector files into one geodataframe."""
         dfs = [gpd.read_parquet(fpath) for fpath in fpaths]
         df = pd.concat(dfs)
         return df
 
-    def _exterior_ratio(self, partial, boundary, geom, transform):
+    @cached_property
+    def data(src):
+        """Read in or process a source file."""
+        # Read data with appropriate method
+        if isinstance(self.src, (str, PosixPath)):
+            try:
+                print(f"Reading in {self.src}...")
+                df = gpd.read_file(self.src)
+            except DataSourceError:
+                df = gpd.read_parquet(self.src)
+        elif isinstance(self.src, (list, tuple)):
+            print(f"Reading and consolidating {len(self.src)} files...")
+            df = self._consolidate_vectors(self.src)
+        else:
+            df = self.src
+
+        # Set crs and project if needed
+        print("Setting coordinate reference information...")
+        if not self.crs:
+            self.crs = df.crs
+        if CRS(self.crs).to_wkt() != df.crs.to_wkt():
+            df = df.to_crs(self.crs)
+
+        # Break out multi-polygons
+        df = df.explode()
+
+        return df
+
+    def _exterior_ratio(self, geom, transform, partial, idx, pname):
         """Calculate the coverage ratio for exterior cells of an array."""
-        current = current_process()
-        idx = np.where(boundary == 1)
-        for r, c in tqdm(zip(*idx), total=len(idx[0]), desc=str(current.name),
-                         position=current._identity[0] - 1):
+        def _ratio(idx):
+            """Calculate the ratio """
+            r, c = idx
+            try:
+                # Find cell bounds
+                window = ((r, r + 1), (c, c + 1))
+                ((row_min, row_max), (col_min, col_max)) = window
+                x_min, y_min = transform * (col_min, row_max)
+                x_max, y_max = transform * (col_max, row_min)
+                bounds = (x_min, y_min, x_max, y_max)
 
-            # Find cell bounds
-            window = ((r, r + 1), (c, c + 1))
-            ((row_min, row_max), (col_min, col_max)) = window
-            x_min, y_min = transform * (col_min, row_max)
-            x_max, y_max = transform * (col_max, row_min)
-            bounds = (x_min, y_min, x_max, y_max)
+                # Construct shapely geometry of cell and intersect geometry
+                cell = geometry.box(*bounds)
+                overlap = cell.intersection(geom)
+                overlap = [g for g in overlap if not g.is_empty]
+                if overlap:
+                    if len(overlap) > 1:
+                        overlap = unary_union(overlap)
+                    else:
+                        overlap = overlap[0]
+                    ratio = (overlap.area / cell.area)
+                    partial[r, c] = ratio
+            except Exception as e:
+                print(e)
+                raise
 
-            # Construct shapely geometry of cell and intersect with geometry
-            cell = geometry.box(*bounds)
-            overlap = cell.intersection(geom)
-            overlap = [g for g in overlap if not g.is_empty]
-            if overlap:
-                if len(overlap) > 1:
-                    overlap = unary_union(overlap)
-                else:
-                    overlap = overlap[0]
-                ratio = (overlap.area / cell.area)
-                partial[r, c] = ratio
+        # Define the ratio worker function
+        # def init_worker(g, t, p):
+        #     """Initial global variables."""
+        #     global geom
+        #     global transform
+        #     global partial
+
+        #     transform = t
+        #     geom = g
+        #     partial = p
+
+        # Loop through each set of indices and calculate percent overlap
+        idxs = list(zip(*idx))
+        # print(f"Running partial rasterization for process {pname}...")
+        # pargs = dict(max_workers=mp.cpu_count(), initializer=init_worker,
+        #              initargs=(geom, transform, partial,))
+        # with ProcessPoolExecutor(**pargs) as ppe:
+        #     futures = []
+        #     for idx in idxs:
+        #         submission = ppe.submit(_ratio, idx)
+        #         futures.append(submission)
+        #     for future in tqdm(as_completed(futures), total=len(futures)):
+        #         future.result()
+
+        # with mp.ProcessPool(mp.cpu_count()) as pool:
+        #     for _ in tqdm(pool.imap(_ratio, idxs), total=len(idxs),
+        #                   desc=pname, position=int(pname.split("/")[0])):
+        #         pass
+
+        with tqdm(idxs, desc=pname, position=int(pname.split("/")[0])) as pb:
+            for idx in pb:
+                _ratio(idx)
 
         return partial
 
-    def _get_args(self, df, chunk_size=10_000):
-        """Get arguments for multiprocessing.
+    def _rasterize_binary(self):
+        """Build initial inputs for the partial rasterization routine.
 
         Parameters
         ----------
@@ -196,7 +284,7 @@ class Rasterizer:
             `_rasterize_partial`.
         """
         # Option #1: Split data frame into spatially neighboring grid cells
-        df = grid_chunks(df, chunk_size=chunk_size)
+        df = grid_chunks(self.data, chunk_size=self.chunk_size)
         geometries = []
         for group in df.groupby("grid")["geometry"]:
             geom_series = group[1]
@@ -211,7 +299,8 @@ class Rasterizer:
 
         # Build argument list
         arg_list = []
-        for geom_list in geometries:
+        print("Performing initial all-touch rasterization...")
+        for i, geom_list in tqdm(enumerate(geometries), total=len(geometries)):
             # Unpack target geometry
             xmin, ymin, xmax, ymax = self._bounds(geom_list)
             height, width = self._shape(geom_list)
@@ -219,37 +308,65 @@ class Rasterizer:
             transform = rio.transform.from_bounds(
                 xmin, ymin, xmax, ymax, width, height
             )
-            arg_list.append((geom_list, transform, shape))
+
+            # Create full and boundary arrays (inside and outline of shape)
+            full = self._rasterize(geom_list, shape, transform)
+            boundary = self._rasterize(geom_list, shape, transform,
+                                       exterior=True)
+            partial = (full - boundary).astype("float16")
+
+            # Find the index position of the boundary cells
+            idx = np.where(boundary == 1)
+
+            # Create a process name
+            pname = f"{i}/{len(geometries)}"
+
+            # Initialize progress bar so it doesn't bounce around
+            arg_list.append((geom_list, transform, partial, idx, pname))
 
         return arg_list
 
-    def _grid(self, df, nchunks):
-        """Create a grid to split a geodataframe."""
+    def _grid(self, df, grid_size=10_000):
+        """Create a grid used to split a geodataframe."""
         # Polygon Size
         xmin, ymin, xmax, ymax = df.total_bounds
         x = xmin
         y = ymin
         array = []
-        size = 10_000
+        grid_size = 10_000
         while y <= ymax:
             while x <= xmax:
                 geom = geometry.Polygon([
                     (x, y),
-                    (x, y + size),
-                    (x + size, y + size),
-                    (x + size, y),
+                    (x, y + grid_size),
+                    (x + grid_size, y + grid_size),
+                    (x + grid_size, y),
                     (x, y)
                 ])
                 array.append(geom)
-                x += size
+                x += grid_size
             x = xmin
-            y += size
+            y += grid_size
 
         grid = gpd.GeoDataFrame(array, columns=["geometry"], crs=df.crs)
         grid["grid"] = grid.index
         df = gpd.sjoin(df, grid)
 
         return df
+
+    def _preflight(self):
+        """Read in source data, set georeferencing, process data."""
+        # Setup the temporary directory
+        if not self.temp_dir:
+            self.temp_dir = Path(dst).parent.joinpath("tmp")
+        self.temp_dir.mkdir(exist_ok=True, parents=True)
+
+        # Read in template information
+        if self.template:
+            print("Reading template information...")
+            with rio.open(self.template) as r:
+                profile = r.profile
+                self.crs = CRS(profile["crs"])
 
     def _rasterize(self, geom, shape, transform, exterior=False):
         """Rasterize a single geometry."""
@@ -276,73 +393,32 @@ class Rasterizer:
 
         return array
 
-    def rasterize_partial(self, src, dst):
+    def rasterize_partial(self, dst):
         """Rasterize full vector dataset using percent coverage.
 
         Parameters
         ----------
-        src : str | list | gpd.geodataframe.GeoDataFrame 
-            Path to source vector dataset file or list to such paths or a
-            geodataframe.
         dst : str | pathlib.PosixPath
             Path to destination GeoTiff file.
-        resolution : int
-            Target raster resolution in units of the src projection.
-        crs : str
-            Coordinate reference system of target GeoTiff. Use "epsg:<code>"
-            format. Will default to crs of src if not provided.
         """
-        # Start the timer
+        # Read in the file and clear the temporary
         start = time.time()
-
-        # Read in source dataset
-        if isinstance(src, (str, PosixPath)):
-            try:
-                print(f"Reading in {src}...")
-                df = gpd.read_file(src)
-            except DataSourceError:
-                df = gpd.read_parquet(src)
-        elif isinstance(src, (list, tuple)):
-            print(f"Reading and consolidating {len(src)} files...")
-            df = self._consolidate_vectors(src)
-        else:
-            df = src
-        df = df.explode()
-
-        # Set up temporary directory
-        if not self.temp_dir:
-            self.temp_dir = Path(dst).parent.joinpath("tmp")
-        self.temp_dir.mkdir(exist_ok=True, parents=True)
-        files = list(self.temp_dir.glob("*tif"))
-        if files:
-            for file in files:
-                os.remove(file)
-
-        # Read in template information
-        if self.template:
-            print("Reading template information...")
-            with rio.open(self.template) as r:
-                profile = r.profile
-                self.crs = CRS(profile["crs"])
-
-        # Set crs and project if needed
-        print("Setting coordinate reference information...")
-        if not self.crs:
-            self.crs = df.crs
-        if CRS(self.crs).to_wkt() != df.crs.to_wkt():  # Fails if not found
-            df = df.to_crs(self.crs)
+        self._clear_temp()
 
         # Chunk data frame and return argument list
         print("Chunking data frame...")
-        arg_list = self._get_args(df, chunk_size=self.chunk_size)
+        arg_list = self._rasterize_binary()
 
         # Run partial rasterization
         print(f"Performing rasterization on {len(arg_list)} chunks...")
         tmps = []
         with mp.Pool(mp.cpu_count() - 1) as pool:
-            for tmp in tqdm(pool.imap(self._rasterize_partial, arg_list),
-                            total=len(arg_list)):
+            for tmp in pool.imap(self._rasterize_partial, arg_list):
                 tmps.append(tmp)
+
+        # tmps = []
+        # for args in arg_list:
+        #     tmps.append(self._rasterize_partial(args))
 
         # If template, use its bounds
         if self.template:
@@ -403,23 +479,16 @@ class Rasterizer:
     def _rasterize_partial(self, args):
         """Rasterize geometry with percent coverage for partial cells."""
         # Unpack arguments
-        geom, transform, shape = args
-
-        # Create full and boundary arrays (inside and outline of shape)
-        full = self._rasterize(geom, shape, transform)
-        boundary = self._rasterize(geom, shape, transform, exterior=True)
-
-        # Remove boundary cells from full array
-        partial = (full - boundary).astype("float32")
+        geom, transform, partial, idx, i = args
 
         # Loop through indicies of all exterior cells and calc ratio
-        partial = self._exterior_ratio(partial, boundary, geom, transform)
+        partial = self._exterior_ratio(geom, transform, partial, idx, i)
 
         # Save to temporary file
         profile = {
             "transform": transform,
-            "height": shape[0],
-            "width": shape[1],
+            "height": partial.shape[0],
+            "width": partial.shape[1],
             "count": 1,
             "crs": self.crs,
             "driver": "GTiff",
@@ -847,13 +916,6 @@ class Reformatter(Exclusions):
         if not os.path.exists(path):
             raise OSError(f"{path} does not exist.")
 
-        # If theres no template, make sure it matches the excl file
-        # if self.template is not None:
-        #     try:
-        #         self._check_dims(path)
-        #     except:
-        #         raise
-
         # Run warp if needed
         if os.path.exists(dst) and self.overwrite_tif:
             os.remove(dst)
@@ -964,7 +1026,7 @@ class Reformatter(Exclusions):
         vectors = {}
         for name, attrs in self.inputs.items():
             if not os.path.exists(attrs["path"]):
-                raise OSError(f"{attrs["path"]} does not exist.")
+                raise OSError(f"{attrs['path']} does not exist.")
             if str(attrs["path"]).split(".")[-1] in ["gpkg", "shp", "geojson"]:
                 vectors[name] = attrs
         return vectors
@@ -1100,9 +1162,15 @@ if __name__ == "__main__":
     from rev_naerm import HPCDATA, HOMEDATA
 
     TEMPLATE = HOMEDATA.joinpath("rasters/template_ri.tif")
-    DATA = HOMEDATA.joinpath("vectors/tmp")
+    DATADIR = HOMEDATA.joinpath("vectors/tmp")
 
-    self = Rasterizer(template=TEMPLATE)
-    src = list(HOMEDATA.joinpath("vectors/tmp_processed/rhode_island/").glob("*parquet"))
-    dst = HOMEDATA.joinpath("rasters/tests/rasterize_test_ri.tif")
-    self.rasterize_partial(src, dst)
+    src = HOMEDATA.joinpath("vectors/buildings/RhodeIsland.geojson")
+    dst = HOMEDATA.joinpath("rasters/tests/ri_building_test.tif")
+    df = gpd.read_file(src)
+    # df = df.iloc[:2]
+    self = Rasterizer(src=df, template=TEMPLATE, chunk_size=15_000,
+                      progress="all")
+    # arg_list = self._rasterize_binary()
+    # args = arg_list[36]
+    # geom, transform, partial, idx, pname = args
+    self.rasterize_partial(dst)
