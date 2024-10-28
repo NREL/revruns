@@ -17,7 +17,7 @@ import time
 import warnings
 
 from functools import cached_property
-from pathlib import Path, PosixPath
+from pathlib import PosixPath
 
 import geopandas as gpd
 import h5py
@@ -111,7 +111,7 @@ class Rasterizer:
 
     def __init__(self, src, flip=False, resolution=90, crs="esri:102008",
                  template=None, temp_dir=None, chunk_size=10_000,
-                 progress="main"):
+                 multiprocess=False):
         """Initialize Rasterize object.
 
         Parameters
@@ -128,10 +128,8 @@ class Rasterizer:
             0 represent within.
         chunk_size : int
             Chunk side size in meters to use to split `df` for multiprocessing.
-        progress : str
-            Control for progress bar displays. `None` for no progress bar,
-            "main" for one main process progress bar, "all" for all sub-process
-            progress bars.
+        multiprocess : boolean
+            Run in parallel on all available cores. Defaults to False.
         """
         self.src = src
         self.template = template
@@ -140,7 +138,7 @@ class Rasterizer:
         self.crs = crs
         self.flip = flip
         self.chunk_size = chunk_size
-        self.progress = progress
+        self.multiprocess = multiprocess
 
         # Set georeferencing, read and process the source data
         self._preflight()
@@ -148,8 +146,8 @@ class Rasterizer:
     def __repr__(self):
         """Return Rasterizer representation string."""
         attrs = [f"{k}={v}" for k, v in self.__dict__.items() if k != "inputs"]
-        pattrs = ", ".join(attrs)
-        return f"<Rasterizer: {pattrs}>"
+        pattrs = ",\n  ".join(attrs)
+        return f"<Rasterizer object:\n  {pattrs}>"
 
     def _bounds(self, geom_list):
         """Return the bounds of a geometry."""
@@ -230,7 +228,7 @@ class Rasterizer:
         return geometry
 
     @cached_property
-    def data(src):
+    def data(self):
         """Read in or process a source file."""
         # Read data with appropriate method
         if isinstance(self.src, (str, PosixPath)):
@@ -375,11 +373,6 @@ class Rasterizer:
 
     def _preflight(self):
         """Read in source data, set georeferencing, process data."""
-        # Setup the temporary directory
-        if not self.temp_dir:
-            self.temp_dir = Path(dst).parent.joinpath("tmp")
-        self.temp_dir.mkdir(exist_ok=True, parents=True)
-
         # Read in template information
         if self.template:
             print("Reading template information...")
@@ -423,7 +416,7 @@ class Rasterizer:
         # Read in the file and clear the temporary
         start = time.time()
         if not self.temp_dir:
-            self.temp_dir = dst.parent
+            self.temp_dir = dst.parent.joinpath("tmp")
         self.temp_dir.mkdir(exist_ok=True)
         self._clear_temp()
 
@@ -431,10 +424,18 @@ class Rasterizer:
         arg_list = self._build_inputs()
 
         # Run partial rasterization
-        print("Performing partial rasterization...")
         tmps = []
-        for args in tqdm(arg_list):
-            tmps.append(self._rasterize_partial(args))
+        if self.multiprocess:
+            n = mp.cpu_count()
+            print(f"Performing partial rasterization with {n} cores...")
+            with mp.Pool(n) as pool:
+                for tmp in tqdm(pool.imap(self._rasterize_partial, arg_list),
+                                total=len(arg_list)):
+                    tmps.append(tmp)
+        else:
+            print("Performing partial rasterization with 1 core...")
+            for args in tqdm(arg_list):
+                tmps.append(self._rasterize_partial(args))
         tmps = [tmp for tmp in tmps if tmp]
 
         # If template, use its bounds
@@ -447,7 +448,7 @@ class Rasterizer:
         # Merge individual temporary rasters
         print("Merging rasterized arrays...")
         array, transform = merge(
-            sources=tmps,
+            tmps,
             bounds=bounds,
             res=self.resolution,
             method="max"
@@ -1188,17 +1189,3 @@ class Reformatter(Exclusions):
         if self.excl_fpath:
             print(f"Building/updating exclusion {self.excl_fpath}...")
             self.to_h5()
-
-
-if __name__ == "__main__":
-    from rev_naerm import HOMEDATA
-
-    TEMPLATE = HOMEDATA.joinpath("rasters/template_ri.tif")
-
-    src = HOMEDATA.joinpath("vectors/parcels/rhode_island_5070.gpkg")
-    dst = HOMEDATA.joinpath("rasters/tests/ri_building_test.tif")
-    df = gpd.read_file(src)
-    df = df[df["use_code_std_ctgr_desc_lps"] == "RESIDENTIAL"]
-    self = Rasterizer(src=df, template=TEMPLATE, chunk_size=15_000,
-                      progress="all")
-    self.rasterize_partial(dst)
