@@ -17,11 +17,6 @@ import time
 import warnings
 
 from functools import cached_property
-from concurrent.futures import (
-    as_completed,
-    ThreadPoolExecutor,
-    ProcessPoolExecutor
-)
 from pathlib import Path, PosixPath
 
 import geopandas as gpd
@@ -36,7 +31,8 @@ from pyogrio.errors import DataSourceError
 from pyproj import CRS
 from rasterio import features
 from rasterio.merge import merge
-from shapely import geometry
+from rtree import index
+from shapely import geometry, MultiPolygon
 from shapely.ops import unary_union
 from tqdm.auto import tqdm
 
@@ -157,12 +153,49 @@ class Rasterizer:
 
     def _bounds(self, geom_list):
         """Return the bounds of a geometry."""
+        # Get the bounds around all geometries
         bounds = np.array([g.bounds for g in geom_list])
+
+        # Break out the coordinates
         xmin = bounds[:, 0].min()
         ymin = bounds[:, 1].min()
         xmax = bounds[:, 2].max()
         ymax = bounds[:, 3].max()
+
+        # If we have a template, align with that grid
+        if self.template:
+            with rio.open(self.template, "r") as r:
+                transform = r.profile["transform"]
+                xr, _, txmin, _, yr, tymax, _, _, _ = list(transform)
+                xs = [txmin + xr * i for i in range(r.width)]
+                ys = [tymax + yr * i for i in range(r.height)]
+            xmin = xs[np.abs(xs - xmin).argmin()] - self.resolution
+            xmax = xs[np.abs(xs - xmax).argmin()] + self.resolution
+            ymin = ys[np.abs(ys - ymin).argmin()] - self.resolution
+            ymax = ys[np.abs(ys - ymax).argmin()] + self.resolution
+
         return xmin, ymin, xmax, ymax
+
+    def build_profile(self, transform, array):
+        """Build a Rasterio-style georeferecing dictionary."""
+        if not self.template:
+            profile = {
+                "transform": transform,
+                "height": array.shape[0],
+                "width": array.shape[1],
+                "count": 1,
+                "crs": self.crs,
+                "driver": "GTiff",
+                "dtype": array.dtype,
+                "nodata": None,
+                "tiled": False
+            }
+        else:
+            with rio.open(self.template) as r:
+                profile = r.profile
+            profile["dtype"] = str(array.dtype)
+
+        return profile
 
     def _clear_temp(self):
         """Delete temporary files."""
@@ -176,6 +209,25 @@ class Rasterizer:
         dfs = [gpd.read_parquet(fpath) for fpath in fpaths]
         df = pd.concat(dfs)
         return df
+
+    def _collect_geometries(self, group):
+        """Collect and index geometries for a pandas group object."""
+        i = 0
+        geom_list = []
+        ridx = index.Index()
+        geom_series = group[1]
+        for geom in geom_series:
+            if isinstance(geom, MultiPolygon):
+                for part in geom.geoms:
+                    ridx.insert(i, part.bounds)
+                    geom_list.append(part)
+                    i += 1
+            else:
+                ridx.insert(i, geom.bounds)
+                geom_list.append(geom)
+                i += 1
+        geometry = {"rindex": ridx, "geoms": np.array(geom_list)}
+        return geometry
 
     @cached_property
     def data(src):
@@ -205,70 +257,39 @@ class Rasterizer:
 
         return df
 
-    def _exterior_ratio(self, geom, transform, partial, idx, pname):
-        """Calculate the coverage ratio for exterior cells of an array."""
-        def _ratio(idx):
-            """Calculate the ratio """
-            r, c = idx
-            try:
-                # Find cell bounds
-                window = ((r, r + 1), (c, c + 1))
-                ((row_min, row_max), (col_min, col_max)) = window
-                x_min, y_min = transform * (col_min, row_max)
-                x_max, y_max = transform * (col_max, row_min)
-                bounds = (x_min, y_min, x_max, y_max)
+    def _exterior_ratio(self, geoms, transform, partial, ridx, idx, pname):
+        """Calculate the coverage ratio for exterior cells of an array.
 
-                # Construct shapely geometry of cell and intersect geometry
-                cell = geometry.box(*bounds)
-                overlap = cell.intersection(geom)
-                overlap = [g for g in overlap if not g.is_empty]
-                if overlap:
-                    if len(overlap) > 1:
-                        overlap = unary_union(overlap)
-                    else:
-                        overlap = overlap[0]
-                    ratio = (overlap.area / cell.area)
-                    partial[r, c] = ratio
-            except Exception as e:
-                print(e)
-                raise
+        Parameters
+        ----------
+        geom : list
+            List of shapely Polygons.
+        transform  : affine.Affine
+            Geo transformation represented by the partial grid.
+        partial : np.ndarray
+            A numpy array to contain the gridded form of the geometry
+            vectors.
+        ridx : rtree.index.Index
+            An R-Tree index containing extent information of each geometry.
+        idx : tuple
+            A two-item numpy array representing the y- and x-index positions
+            that require partial rasterization (i.e., cells along the
+            boundary of the geometries).
+        pname : str
+            A string represengting a process identifier.
 
-        # Define the ratio worker function
-        # def init_worker(g, t, p):
-        #     """Initial global variables."""
-        #     global geom
-        #     global transform
-        #     global partial
-
-        #     transform = t
-        #     geom = g
-        #     partial = p
-
+        Returns
+        -------
+        np.ndarray : A numpy array containing partial rasterization values.
+        """
         # Loop through each set of indices and calculate percent overlap
         idxs = list(zip(*idx))
-        # print(f"Running partial rasterization for process {pname}...")
-        # pargs = dict(max_workers=mp.cpu_count(), initializer=init_worker,
-        #              initargs=(geom, transform, partial,))
-        # with ProcessPoolExecutor(**pargs) as ppe:
-        #     futures = []
-        #     for idx in idxs:
-        #         submission = ppe.submit(_ratio, idx)
-        #         futures.append(submission)
-        #     for future in tqdm(as_completed(futures), total=len(futures)):
-        #         future.result()
-
-        # with mp.ProcessPool(mp.cpu_count()) as pool:
-        #     for _ in tqdm(pool.imap(_ratio, idxs), total=len(idxs),
-        #                   desc=pname, position=int(pname.split("/")[0])):
-        #         pass
-
-        with tqdm(idxs, desc=pname, position=int(pname.split("/")[0])) as pb:
-            for idx in pb:
-                _ratio(idx)
+        for ix in idxs:
+            partial = self._ratio(ix, partial, transform, ridx, geoms)
 
         return partial
 
-    def _rasterize_binary(self):
+    def _build_inputs(self):
         """Build initial inputs for the partial rasterization routine.
 
         Parameters
@@ -284,36 +305,34 @@ class Rasterizer:
             `_rasterize_partial`.
         """
         # Option #1: Split data frame into spatially neighboring grid cells
+        print("Building spatial partitioning grid...")
         df = grid_chunks(self.data, chunk_size=self.chunk_size)
+
+        # Collect geometry, build r-tree, unpack multi-polygons
+        print("Collecting and indexing geometries...")
         geometries = []
-        for group in df.groupby("grid")["geometry"]:
-            geom_series = group[1]
-            geom_list = []
-            for geom in geom_series:
-                if isinstance(geom, geometry.MultiPolygon):
-                    for part in geom.geoms:
-                        geom_list.append(part)
-                else:
-                    geom_list.append(geom)
-            geometries.append(geom_list)
+        groups = list(df.groupby("grid")["geometry"])
+        for group in tqdm(groups):
+            geometries.append(self._collect_geometries(group))
 
         # Build argument list
         arg_list = []
         print("Performing initial all-touch rasterization...")
-        for i, geom_list in tqdm(enumerate(geometries), total=len(geometries)):
+        for i, geom_dict in tqdm(enumerate(geometries), total=len(geometries)):
             # Unpack target geometry
-            xmin, ymin, xmax, ymax = self._bounds(geom_list)
-            height, width = self._shape(geom_list)
+            geoms = geom_dict["geoms"]
+            rindex = geom_dict["rindex"]
+            xmin, ymin, xmax, ymax = self._bounds(geoms)
+            height, width = self._shape(geoms)
             shape = (height, width)
             transform = rio.transform.from_bounds(
                 xmin, ymin, xmax, ymax, width, height
             )
 
             # Create full and boundary arrays (inside and outline of shape)
-            full = self._rasterize(geom_list, shape, transform)
-            boundary = self._rasterize(geom_list, shape, transform,
-                                       exterior=True)
-            partial = (full - boundary).astype("float16")
+            full = self._rasterize(geoms, shape, transform)
+            boundary = self._rasterize(geoms, shape, transform, exterior=True)
+            partial = (full - boundary).astype("float32")
 
             # Find the index position of the boundary cells
             idx = np.where(boundary == 1)
@@ -322,7 +341,7 @@ class Rasterizer:
             pname = f"{i}/{len(geometries)}"
 
             # Initialize progress bar so it doesn't bounce around
-            arg_list.append((geom_list, transform, partial, idx, pname))
+            arg_list.append((geoms, transform, partial, rindex, idx, pname))
 
         return arg_list
 
@@ -403,22 +422,20 @@ class Rasterizer:
         """
         # Read in the file and clear the temporary
         start = time.time()
+        if not self.temp_dir:
+            self.temp_dir = dst.parent
+        self.temp_dir.mkdir(exist_ok=True)
         self._clear_temp()
 
         # Chunk data frame and return argument list
-        print("Chunking data frame...")
-        arg_list = self._rasterize_binary()
+        arg_list = self._build_inputs()
 
         # Run partial rasterization
-        print(f"Performing rasterization on {len(arg_list)} chunks...")
+        print("Performing partial rasterization...")
         tmps = []
-        with mp.Pool(mp.cpu_count() - 1) as pool:
-            for tmp in pool.imap(self._rasterize_partial, arg_list):
-                tmps.append(tmp)
-
-        # tmps = []
-        # for args in arg_list:
-        #     tmps.append(self._rasterize_partial(args))
+        for args in tqdm(arg_list):
+            tmps.append(self._rasterize_partial(args))
+        tmps = [tmp for tmp in tmps if tmp]
 
         # If template, use its bounds
         if self.template:
@@ -429,11 +446,8 @@ class Rasterizer:
 
         # Merge individual temporary rasters
         print("Merging rasterized arrays...")
-        nopen = len(fopen())
-        print(f"Open files: {nopen}")
-        datasets = [rio.open(tmp) for tmp in tmps]
         array, transform = merge(
-            datasets,
+            sources=tmps,
             bounds=bounds,
             res=self.resolution,
             method="max"
@@ -446,29 +460,13 @@ class Rasterizer:
             array = (array - 1) * -1
 
         # Write to GeoTiff
-        if not self.template:
-            profile = {
-                "transform": transform,
-                "height": array.shape[0],
-                "width": array.shape[1],
-                "count": 1,
-                "crs": self.crs,
-                "driver": "GTiff",
-                "dtype": "float32",
-                "nodata": None,
-                "tiled": False
-            }
-        else:
-            profile["dtype"] = str(array.dtype)
-
         print(f"Writing output to {dst}...")
+        profile = self.build_profile(transform=transform, array=array)
         with rio.open(dst, "w", **profile) as file:
             file.write(array, 1)
 
         # Close and remove temporary files
-        print("Closing and removing temporary files...")
-        for dataset in datasets:
-            dataset.close()
+        print("Removing temporary files...")
         shutil.rmtree(self.temp_dir)
 
         # Print runtime
@@ -479,12 +477,12 @@ class Rasterizer:
     def _rasterize_partial(self, args):
         """Rasterize geometry with percent coverage for partial cells."""
         # Unpack arguments
-        geom, transform, partial, idx, i = args
+        geoms, transform, partial, ridx, idx, i = args
 
         # Loop through indicies of all exterior cells and calc ratio
-        partial = self._exterior_ratio(geom, transform, partial, idx, i)
+        partial = self._exterior_ratio(geoms, transform, partial, ridx, idx, i)
 
-        # Save to temporary file
+        # Build a georeferencing dictionary
         profile = {
             "transform": transform,
             "height": partial.shape[0],
@@ -492,17 +490,51 @@ class Rasterizer:
             "count": 1,
             "crs": self.crs,
             "driver": "GTiff",
-            "dtype": "float32",
+            "dtype": partial.dtype,
             "nodata": None,
             "tiled": False
         }
 
-        tmp = next(tempfile._get_candidate_names())
-        dst = str(self.temp_dir.joinpath(tmp + ".tif"))
-        with rio.open(dst, "w", **profile) as file:
-            file.write(partial, 1)
+        # Save to temporary file
+        if partial.shape != (1, 1):
+            tmp = next(tempfile._get_candidate_names())
+            dst = str(self.temp_dir.joinpath(tmp + ".tif"))
+            with rio.open(dst, "w", **profile) as file:
+                file.write(partial, 1)
 
-        return dst
+            return dst
+
+    def _ratio(self, ix, partial, transform, ridx, geoms):
+        """Calculate the ratio of geometry coverage within a cell."""
+        row_min, col_min = ix
+        row_max = row_min + 1
+        col_max = col_min + 1
+        try:
+            # Find cell bounds
+            x_min, y_min = transform * (col_min, row_max)
+            x_max, y_max = transform * (col_max, row_min)
+            bounds = x_min, y_min, x_max, y_max
+
+            # Check if any geometries intersect using the R-Tree index
+            keepers = [r for r in ridx.intersection(bounds)]
+            cell_geoms = geoms[keepers]
+            cell = geometry.box(*bounds)
+            overlap = cell.intersection(cell_geoms)
+            overlap = [g for g in overlap if not g.is_empty]
+
+            # Construct shapely geometry of cell and intersect geometry
+            if overlap:
+                if len(overlap) > 1:
+                    overlap = unary_union(overlap)
+                else:
+                    overlap = overlap[0]
+                ratio = (overlap.area / cell.area)
+                partial[row_min, col_min] = ratio
+        except Exception as e:
+            print(e)
+            raise
+
+        return partial
 
     def _shape(self, geom):
         """Return target shape for geometry."""
@@ -1159,18 +1191,14 @@ class Reformatter(Exclusions):
 
 
 if __name__ == "__main__":
-    from rev_naerm import HPCDATA, HOMEDATA
+    from rev_naerm import HOMEDATA
 
     TEMPLATE = HOMEDATA.joinpath("rasters/template_ri.tif")
-    DATADIR = HOMEDATA.joinpath("vectors/tmp")
 
-    src = HOMEDATA.joinpath("vectors/buildings/RhodeIsland.geojson")
+    src = HOMEDATA.joinpath("vectors/parcels/rhode_island_5070.gpkg")
     dst = HOMEDATA.joinpath("rasters/tests/ri_building_test.tif")
     df = gpd.read_file(src)
-    # df = df.iloc[:2]
+    df = df[df["use_code_std_ctgr_desc_lps"] == "RESIDENTIAL"]
     self = Rasterizer(src=df, template=TEMPLATE, chunk_size=15_000,
                       progress="all")
-    # arg_list = self._rasterize_binary()
-    # args = arg_list[36]
-    # geom, transform, partial, idx, pname = args
     self.rasterize_partial(dst)
