@@ -17,7 +17,7 @@ import time
 import warnings
 
 from functools import cached_property
-from pathlib import PosixPath
+from pathlib import Path, PosixPath
 
 import geopandas as gpd
 import h5py
@@ -44,62 +44,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 NEEDED_FIELDS = ["name", "path"]
-
-
-def grid_chunks(df, chunk_size=10_000):
-    """Create a grid to split a geodataframe into roughly `nchunks` parts.
-
-    Parameters
-    ----------
-    df : pd.core.frame.DataFrame
-        A pandas data frame of features to rasterize.
-    chunk_size : int
-        Chunk side size in meters to use to split `df` for multiprocessing.
-
-    Returns
-    -------
-    pd.core.frame.DataFrame : A data frame split into chunks according to the
-        `chunk_size` argument.
-    """
-    # Polygon Size
-    xmin, ymin, xmax, ymax = df.total_bounds
-    width = xmax - xmin
-    height = ymax - ymin
-
-    # Needed number of cells in each direction
-    nx = np.ceil(width / chunk_size)
-    ny = np.ceil(height / chunk_size)
-
-    # Each cell distance
-    ysize = height / ny
-    xsize = width / nx
-
-    # Build grid geometry
-    x = xmin
-    y = ymin
-    array = []
-    while y <= ymax:
-        while x <= xmax:
-            geom = geometry.Polygon([
-                (x, y),
-                (x, y + ysize),
-                (x + xsize, y + ysize),
-                (x + xsize, y),
-                (x, y)
-            ])
-            array.append(geom)
-            x += xsize
-        x = xmin
-        y += ysize
-
-    # Build grid geodataframe
-    grid = gpd.GeoDataFrame(array, columns=["geometry"], crs=df.crs)
-    grid["grid"] = grid.index
-
-    # Cut the input geometries by this grid
-    df = gpd.overlay(df, grid, how="intersection")
-
-    return df
 
 
 def fopen():
@@ -129,9 +73,10 @@ class Rasterizer:
         chunk_size : int
             Chunk side size in meters to use to split `df` for multiprocessing.
         multiprocess : boolean
-            Run in parallel on all available cores. Defaults to False.
+            Run in parallel on all available cores. This may only be used if
+            `src` is a string pointing to a singular file. Defaults to False.
         """
-        self.src = src
+        self.src = Path(src)
         self.template = template
         self.temp_dir = temp_dir
         self.resolution = resolution
@@ -208,13 +153,12 @@ class Rasterizer:
         df = pd.concat(dfs)
         return df
 
-    def _collect_geometries(self, group):
+    def _collect_geometries(self, geoseries):
         """Collect and index geometries for a pandas group object."""
         i = 0
         geom_list = []
         ridx = index.Index()
-        geom_series = group[1]
-        for geom in geom_series:
+        for geom in geoseries:
             if isinstance(geom, MultiPolygon):
                 for part in geom.geoms:
                     ridx.insert(i, part.bounds)
@@ -224,8 +168,7 @@ class Rasterizer:
                 ridx.insert(i, geom.bounds)
                 geom_list.append(geom)
                 i += 1
-        geometry = {"rindex": ridx, "geoms": np.array(geom_list)}
-        return geometry
+        return np.array(geom_list), ridx
 
     @cached_property
     def data(self):
@@ -255,7 +198,7 @@ class Rasterizer:
 
         return df
 
-    def _exterior_ratio(self, geoms, transform, partial, ridx, idx, pname):
+    def _exterior_ratio(self, geoms, transform, partial, ridx, idx):
         """Calculate the coverage ratio for exterior cells of an array.
 
         Parameters
@@ -273,8 +216,6 @@ class Rasterizer:
             A two-item numpy array representing the y- and x-index positions
             that require partial rasterization (i.e., cells along the
             boundary of the geometries).
-        pname : str
-            A string represengting a process identifier.
 
         Returns
         -------
@@ -287,8 +228,44 @@ class Rasterizer:
 
         return partial
 
-    def _build_inputs(self):
+    def _build_inputs(self, vector_dst):
         """Build initial inputs for the partial rasterization routine.
+
+        Parameters
+        ----------
+        df : pd.core.frame.DataFrame
+            A pandas data frame of features to rasterize.
+        vector_dst : str | pathlib.PosixPath
+            Path to temporary vector dataset containing all pre-processed
+            geometries. Pre-processing includes unpacking multipolygons into
+            polygons, combining geometries from multiple files, and assigning
+            a grid ID after chunking geometries for parallel processing.
+
+        Returns
+        -------
+        list : A list of argument values for `_rasterize` or
+            `_rasterize_partial`.
+        """
+        # Split dataframe into spatially neighboring cells, collect indices
+        print("Building spatial partitioning grid...")
+        df = self.grid_chunks(self.data, chunk_size=self.chunk_size)
+        df.to_file(vector_dst, "GPKG")
+
+        # Collect geometry, build r-tree, unpack multi-polygons
+        print("Collecting geometry indices...")
+        inputs = []
+        groups = list(df.groupby("grid")["geometry"])
+        for _, group in groups:
+            idx = group.index[0], group.index[-1]
+            entry = {"fpath": vector_dst, "gids": idx}
+            inputs.append(entry)
+        del df
+        del groups
+
+        return inputs
+
+    def grid_chunks(self, df, chunk_size=10_000):
+        """Create a grid to split a geodataframe into roughly `nchunks` parts.
 
         Parameters
         ----------
@@ -299,75 +276,51 @@ class Rasterizer:
 
         Returns
         -------
-        list : A list of argument values for `_rasterize` or
-            `_rasterize_partial`.
+        pd.core.frame.DataFrame : A data frame split into chunks according to the
+            `chunk_size` argument.
         """
-        # Option #1: Split data frame into spatially neighboring grid cells
-        print("Building spatial partitioning grid...")
-        df = grid_chunks(self.data, chunk_size=self.chunk_size)
-
-        # Collect geometry, build r-tree, unpack multi-polygons
-        print("Collecting and indexing geometries...")
-        geometries = []
-        groups = list(df.groupby("grid")["geometry"])
-        for group in tqdm(groups):
-            geometries.append(self._collect_geometries(group))
-
-        # Build argument list
-        arg_list = []
-        print("Performing initial all-touch rasterization...")
-        for i, geom_dict in tqdm(enumerate(geometries), total=len(geometries)):
-            # Unpack target geometry
-            geoms = geom_dict["geoms"]
-            rindex = geom_dict["rindex"]
-            xmin, ymin, xmax, ymax = self._bounds(geoms)
-            height, width = self._shape(geoms)
-            shape = (height, width)
-            transform = rio.transform.from_bounds(
-                xmin, ymin, xmax, ymax, width, height
-            )
-
-            # Create full and boundary arrays (inside and outline of shape)
-            full = self._rasterize(geoms, shape, transform)
-            boundary = self._rasterize(geoms, shape, transform, exterior=True)
-            partial = (full - boundary).astype("float32")
-
-            # Find the index position of the boundary cells
-            idx = np.where(boundary == 1)
-
-            # Create a process name
-            pname = f"{i}/{len(geometries)}"
-
-            # Initialize progress bar so it doesn't bounce around
-            arg_list.append((geoms, transform, partial, rindex, idx, pname))
-
-        return arg_list
-
-    def _grid(self, df, grid_size=10_000):
-        """Create a grid used to split a geodataframe."""
         # Polygon Size
         xmin, ymin, xmax, ymax = df.total_bounds
+        width = xmax - xmin
+        height = ymax - ymin
+
+        # Needed number of cells in each direction
+        nx = np.ceil(width / chunk_size)
+        ny = np.ceil(height / chunk_size)
+
+        # Each cell distance
+        ysize = height / ny
+        xsize = width / nx
+
+        # Build grid geometry
         x = xmin
         y = ymin
         array = []
-        grid_size = 10_000
         while y <= ymax:
             while x <= xmax:
                 geom = geometry.Polygon([
                     (x, y),
-                    (x, y + grid_size),
-                    (x + grid_size, y + grid_size),
-                    (x + grid_size, y),
+                    (x, y + ysize),
+                    (x + xsize, y + ysize),
+                    (x + xsize, y),
                     (x, y)
                 ])
                 array.append(geom)
-                x += grid_size
+                x += xsize
             x = xmin
-            y += grid_size
+            y += ysize
 
+        # Build grid geodataframe
         grid = gpd.GeoDataFrame(array, columns=["geometry"], crs=df.crs)
+        grid["geometry"] = grid["geometry"].buffer(self.resolution * 2)
         grid["grid"] = grid.index
-        df = gpd.sjoin(df, grid)
+
+        # Cut the input geometries by this grid
+        df = gpd.overlay(df, grid, how="intersection")
+
+        # Sort by grid and reindex so we read using slices
+        df = df.sort_values("grid")
+        df = df.reset_index()
 
         return df
 
@@ -415,27 +368,32 @@ class Rasterizer:
         """
         # Read in the file and clear the temporary
         start = time.time()
+        dst = Path(dst)
+        if not dst.name.endswith(".tif"):
+            raise OSError(f"Cannot write outputs to {dst}, GeoTiff format "
+                          "required.")
         if not self.temp_dir:
             self.temp_dir = dst.parent.joinpath("tmp")
         self.temp_dir.mkdir(exist_ok=True)
         self._clear_temp()
 
         # Chunk data frame and return argument list
-        arg_list = self._build_inputs()
+        vector_dst = dst.parent.joinpath(dst.name.replace(".tif", ".gpkg"))
+        input_list = self._build_inputs(vector_dst)
 
         # Run partial rasterization
         tmps = []
         if self.multiprocess:
             n = mp.cpu_count()
             print(f"Performing partial rasterization with {n} cores...")
-            with mp.Pool(n) as pool:
-                for tmp in tqdm(pool.imap(self._rasterize_partial, arg_list),
-                                total=len(arg_list)):
+            with mp.ThreadPool(n) as pool:
+                for tmp in tqdm(pool.imap(self._rasterize_partial, input_list),
+                                total=len(input_list)):
                     tmps.append(tmp)
         else:
             print("Performing partial rasterization with 1 core...")
-            for args in tqdm(arg_list):
-                tmps.append(self._rasterize_partial(args))
+            for inputs in tqdm(input_list):
+                tmps.append(self._rasterize_partial(inputs))
         tmps = [tmp for tmp in tmps if tmp]
 
         # If template, use its bounds
@@ -475,13 +433,35 @@ class Rasterizer:
         duration = round((end - start) / 60, 2)
         print(f"Finished, {duration} minutes")
 
-    def _rasterize_partial(self, args):
+    def _rasterize_partial(self, inputs):
         """Rasterize geometry with percent coverage for partial cells."""
-        # Unpack arguments
-        geoms, transform, partial, ridx, idx, i = args
+        # Read in geometries
+        fpath = inputs["fpath"]
+        gids = inputs["gids"]
+        if gids[0] != gids[1]:
+            df = gpd.read_file(fpath, rows=slice(gids[0], gids[1]))
+        else:
+            df = gpd.read_file(fpath, rows=slice(gids[0] - 1, gids[1] + 1))
+        geoms, ridx = self._collect_geometries(df["geometry"])
+
+        # Build georefencing information
+        xmin, ymin, xmax, ymax = self._bounds(geoms)
+        height, width = self._shape(geoms)
+        shape = (height, width)
+        transform = rio.transform.from_bounds(
+            xmin, ymin, xmax, ymax, width, height
+        )
+
+        # Create full and boundary arrays (inside and outline of shape)
+        full = self._rasterize(geoms, shape, transform)
+        boundary = self._rasterize(geoms, shape, transform, exterior=True)
+        partial = (full - boundary).astype("float32")
+
+        # Find the index position of the boundary cells
+        idx = np.where(boundary == 1)
 
         # Loop through indicies of all exterior cells and calc ratio
-        partial = self._exterior_ratio(geoms, transform, partial, ridx, idx, i)
+        partial = self._exterior_ratio(geoms, transform, partial, ridx, idx)
 
         # Build a georeferencing dictionary
         profile = {
@@ -1189,3 +1169,14 @@ class Reformatter(Exclusions):
         if self.excl_fpath:
             print(f"Building/updating exclusion {self.excl_fpath}...")
             self.to_h5()
+
+
+if __name__ == "__main__":
+    template = "/Users/twillia2/github/rev_naerm/data/rasters/template_ri.tif"
+
+    src = "/Users/twillia2/scratch/parcel_test.gpkg"
+    dst = "/Users/twillia2/scratch/parcel_test_wo_buffer.tif"
+
+    self = Rasterizer(src=src, template=template, multiprocess=False,
+                      chunk_size=10_000)
+    self.rasterize_partial(dst=dst)
