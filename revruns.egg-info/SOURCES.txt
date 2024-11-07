@@ -6,7 +6,6 @@ revruns/constants.py
 revruns/cython_compute.c
 revruns/gdalmethods.py
 revruns/paths.py
-revruns/rev_to_reeds.py
 revruns/rr.py
 revruns/rraster.py
 revruns/rratb.py

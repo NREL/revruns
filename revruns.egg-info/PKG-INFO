@@ -20,4 +20,4 @@ Requires-Dist: remotezip>=0.12.1
 Requires-Dist: requests>=2.31.0
 Requires-Dist: tqdm>=4.65.0
 Requires-Dist: xlrd>=2.0.1
-Requires-Dist: gdal==3.8.5.*
+Requires-Dist: gdal==3.9.3.*
