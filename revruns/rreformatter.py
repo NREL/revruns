@@ -77,8 +77,8 @@ class Rasterizer:
             `src` is a string pointing to a singular file. Defaults to False.
         """
         self.src = Path(src)
-        self.template = template
-        self.temp_dir = temp_dir
+        self.template = Path(template)
+        self.temp_dir = Path(temp_dir)
         self.resolution = resolution
         self.crs = crs
         self.flip = flip
@@ -239,7 +239,9 @@ class Rasterizer:
             Path to temporary vector dataset containing all pre-processed
             geometries. Pre-processing includes unpacking multipolygons into
             polygons, combining geometries from multiple files, and assigning
-            a grid ID after chunking geometries for parallel processing.
+            a grid ID after chunking geometries for parallel processing. This
+            will automatically be saved to a geoparquet, regardless of the
+            filename extension.
 
         Returns
         -------
@@ -249,18 +251,16 @@ class Rasterizer:
         # Split dataframe into spatially neighboring cells, collect indices
         print("Building spatial partitioning grid...")
         df = self.grid_chunks(self.data, chunk_size=self.chunk_size)
-        df.to_file(vector_dst, "GPKG")
+        vector_dst = vector_dst.parent.joinpath(vector_dst.stem + ".parquet")
+        df.to_parquet(vector_dst)
 
         # Collect geometry, build r-tree, unpack multi-polygons
         print("Collecting geometry indices...")
         inputs = []
-        groups = list(df.groupby("grid")["geometry"])
-        for _, group in groups:
-            idx = group.index[0], group.index[-1]
-            entry = {"fpath": vector_dst, "gids": idx}
+        for gid in df["grid"].unique():
+            entry = {"fpath": vector_dst, "gid": gid}
             inputs.append(entry)
         del df
-        del groups
 
         return inputs
 
@@ -375,7 +375,6 @@ class Rasterizer:
         if not self.temp_dir:
             self.temp_dir = dst.parent.joinpath("tmp")
         self.temp_dir.mkdir(exist_ok=True)
-        self._clear_temp()
 
         # Chunk data frame and return argument list
         vector_dst = dst.parent.joinpath(dst.name.replace(".tif", ".gpkg"))
@@ -426,7 +425,8 @@ class Rasterizer:
 
         # Close and remove temporary files
         print("Removing temporary files...")
-        shutil.rmtree(self.temp_dir)
+        for tmp in tmps:
+            os.remove(tmp)
 
         # Print runtime
         end = time.time()
@@ -437,11 +437,8 @@ class Rasterizer:
         """Rasterize geometry with percent coverage for partial cells."""
         # Read in geometries
         fpath = inputs["fpath"]
-        gids = inputs["gids"]
-        if gids[0] != gids[1]:
-            df = gpd.read_file(fpath, rows=slice(gids[0], gids[1]))
-        else:
-            df = gpd.read_file(fpath, rows=slice(gids[0] - 1, gids[1] + 1))
+        gid = inputs["gid"]            
+        df = gpd.read_parquet(fpath, filters=[("grid", "==", gid)])
         geoms, ridx = self._collect_geometries(df["geometry"])
 
         # Build georefencing information
@@ -1169,14 +1166,3 @@ class Reformatter(Exclusions):
         if self.excl_fpath:
             print(f"Building/updating exclusion {self.excl_fpath}...")
             self.to_h5()
-
-
-if __name__ == "__main__":
-    template = "/Users/twillia2/github/rev_naerm/data/rasters/template_ri.tif"
-
-    src = "/Users/twillia2/scratch/parcel_test.gpkg"
-    dst = "/Users/twillia2/scratch/parcel_test_wo_buffer.tif"
-
-    self = Rasterizer(src=src, template=template, multiprocess=False,
-                      chunk_size=10_000)
-    self.rasterize_partial(dst=dst)
