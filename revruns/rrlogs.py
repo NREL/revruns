@@ -13,6 +13,7 @@ import json
 import os
 import warnings
 
+from collections import deque
 from glob import glob
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from pandarallel import pandarallel
 
 import click
 import h5py
+import numpy as np
 import pandas as pd
 import pathos.multiprocessing as mp
 
@@ -55,16 +57,14 @@ FULL_PRINT_HELP = ("When printing log outputs (using -o <pid> or -e <pid>) "
                    "may fill up your entire shell so the default is to limit "
                    "this output to the first 20 lines of of the target log "
                    "file. (boolean)")
-SAVE_HELP = ("Write the outputs of an rrlogs call to a csv. (boolean)")
+SAVE_HELP = "Write the outputs of an rrlogs call to a csv. (boolean)"
 STATS_HELP = ("Print summary statistics instead of status information. Only "
               "works for existing files (i.e., completed files not in "
-              "chunk files). Must be used with --field or -fd if target "
-              "variable is not the default (cf_mean). (boolean)")
-FIELD_HELP = ("Field in dataset to use if request stat summary (defaults to "
-              "mean_cf). (str)")
-AU_HELP = ("Count AUs used for requested runs. (boolean)")
-VERBOSE_HELP = ("Print status data to console. (boolean)")
-
+              "chunk files). (boolean)")
+FIELD_HELP = ("Field in dataset to use if request stat summary (defaults to"
+              "mean_cf).")
+AU_HELP = "Count AUs used for requested runs. (boolean)"
+VERBOSE_HELP = "Print status data to console. (boolean)"
 CONFIG_DICT = {
     "gen": "config_gen.json",
     "bespoke": "config_bespoke.json",
@@ -75,26 +75,11 @@ CONFIG_DICT = {
     "aggregation": "config_aggregation.son",
     "supply-curve": "config_supply-curve.json",
     "rep-profiles": "config_rep-profiles.json",
+    "hybrids": "config_hybrids.json",
     "script": "config_script.json",
     "nrwal": "config_nrwal.json",
     "qaqc": "config_qaqc.json"
 }
-MODULE_NAMES = {
-    "gen": "generation",
-    "bespoke": "bespoke",
-    "collect": "collect",
-    "econ": "econ",
-    "offshore": "offshore",
-    "multi-year": "multi-year",
-    "aggregation": "supply-curve-aggregation",
-    "supply-curve": "supply-curve",
-    "rep-profiles": "rep-profiles",
-    "nrwal": "nrwal",
-    "script": "script",
-    "qaqc": "qa-qc",
-    "add-reeds-cols": "add-reeds-cols"
-}
-
 FAILURE_STRINGS = ["failure", "fail", "failed", "f"]
 PENDING_STRINGS = ["pending", "pend", "p"]
 RUNNING_STRINGS = ["running", "run", "r"]
@@ -146,31 +131,12 @@ def read_h5(fpath, field):
     return meta
 
 
-class Log_Finder:
-    """Methods for finding logging information in a run directory."""
-
-
-class No_Pipeline(Log_Finder):
-    """Methods for checking logs without a reV pipeline."""
-
-    def __init__(self, folder=".", error=None, out=None, walk=False):
-        """Initialize NPipeline object."""
-        self.folder = folder
-        self.error = error
-        self.out = out
-        self.walk = walk
-
-    @property
-    def error_logs(self):
-        """Return paths to all error logs."""
-
-
-class RRLogs(No_Pipeline):
+class RRLogs:
     """Methods for checking rev run statuses."""
 
     def __init__(self, folder=".", module=None, status=None, error=None,
                  out=None, walk=False, full_print=False, csv=False,
-                 stats=False, field="mean_cf", count_aus=False,
+                 stats=False, field="cf_mean", count_aus=False,
                  verbose=True):
         """Initialize an RRLogs object."""
         self.folder = os.path.expanduser(os.path.abspath(folder))
@@ -213,10 +179,8 @@ class RRLogs(No_Pipeline):
             # Else, create a single data frame with everything
             else:
                 modules = status.keys()
-                names_modules = {v: k for k, v in MODULE_NAMES.items()}
                 dfs = []
-                for module_name in modules:
-                    module = names_modules[module_name]
+                for module in modules:
                     try:
                         mstatus = self.build_module_dataframe(status, module)
                     except KeyError:
@@ -251,9 +215,8 @@ class RRLogs(No_Pipeline):
         """Convert the status entry for a module to a dataframe."""
         # Get the module entry
         cstatus = copy.deepcopy(status)
-        mkey = MODULE_NAMES[module]
-        if mkey in cstatus:
-            mstatus = cstatus[mkey]
+        if module in cstatus:
+            mstatus = cstatus[module]
         else:
             return None
 
@@ -347,7 +310,7 @@ class RRLogs(No_Pipeline):
             try:
                 self.find_pid_dirs([sub_folder], row["job_id"])
             except FileNotFoundError:
-                df["index"].iloc[i] = "NA"
+                df.loc[i, "index"] = np.nan
         return df
 
     def checkout(self, logdir, pid, output="error"):
@@ -371,7 +334,7 @@ class RRLogs(No_Pipeline):
             return
 
         # Read each line in the log
-        with open(log, "r") as file:
+        with open(log, "r", encoding="utf-8") as file:
             lines = file.readlines()
 
         # Limit the number of lines if full_print is not set
@@ -437,7 +400,7 @@ class RRLogs(No_Pipeline):
 
         return paths
 
-    def find_logs(self, folder):  # <------------------------------------------ Speed this up or use find_files
+    def find_logs(self, folder):
         """Find the log directory, assumes one per folder."""
         # If there is a log directory directly in this folder use that
         contents = glob(os.path.join(folder, "*"))
@@ -459,8 +422,8 @@ class RRLogs(No_Pipeline):
             if not logdir:
                 # The file might not open
                 try:
-                    config = json.load(open(file, "r"))
-                except:  # <--------------------------------------------------- What would this/these be?
+                    config = json.load(open(file, "r", encoding="utf-8"))
+                except:
                     pass
 
                 # The directory might be named differently
@@ -527,7 +490,7 @@ class RRLogs(No_Pipeline):
                     pid_dirs.append(folder)
 
         if not pid_dirs:
-            msg = "No log files found for pid {}".format(target_pid)
+            msg = f"No log files found for pid {target_pid}"
             raise FileNotFoundError(Fore.RED + msg + Style.RESET_ALL)
 
         return pid_dirs
@@ -548,11 +511,20 @@ class RRLogs(No_Pipeline):
         logdir = self.find_logs(dirout)
         if logdir:
             stdout = os.path.join(logdir, "stdout")
-            logpath = glob(os.path.join(stdout, "*{}*.o".format(jobid)))[0]
+            logpath = glob(os.path.join(stdout, f"*{jobid}*.o"))[0]
 
-            # We can't get file creation in Linux
+            # We apparently can't get file creation in Linux - Use the logs
             with open(logpath, "r", encoding="utf-8") as file:
-                lines = [line.replace("\n", "") for line in file.readlines()]
+                tail = list(deque(file, 100))
+            with open(logpath, "r", encoding="utf-8") as file:
+                head = []
+                for _ in range(100):
+                    try:
+                        head.append(next(file))
+                    except:
+                        break
+            lines = head + tail
+            lines = [l.replace("\n", "") for l in lines]
 
             time_lines = []
             for line in lines:
@@ -637,7 +609,7 @@ class RRLogs(No_Pipeline):
                     try:
                         jstatus = json.load(f)
                     except json.decoder.JSONDecodeError:
-                        pass
+                        continue
                 jmodule = next(iter(jstatus))
                 jname = next(iter(jstatus[jmodule]))
                 if jmodule in status:
@@ -746,7 +718,15 @@ class RRLogs(No_Pipeline):
         elif ext == "h5":
             df = read_h5(fpath, self.field)
         else:
-            raise NotImplementedError(f"Cannot summarize {ext} files.")
+            raise NotImplementedError(
+                 Fore.RED + f"Cannot summarize {ext} files." + Style.RESET_ALL
+            )
+
+        # Check that the field is in the data frame
+        if self.field not in df:
+            raise KeyError(
+                Fore.RED + f"{self.field} not in {fpath}." + Style.RESET_ALL
+            )
 
         # Calculate min, max, std, etc.
         return df.iloc[:, -1].describe()
@@ -754,17 +734,15 @@ class RRLogs(No_Pipeline):
     def _add_stats(self, mdf):
         """Add stats to a module status data frame."""
         # Only return for existing files (i.e., not incomplete or chunk_files)
-        mdf["out_file"][pd.isnull(mdf["out_file"])] = "NaN"
-        mdf["exists"] = mdf["out_file"].apply(os.path.exists)
+        mdf.loc[pd.isnull(mdf["out_file"]), "out_file"] = "NaN"
+        mdf.loc[:, "exists"] = mdf["out_file"].apply(os.path.exists)
         mdf = mdf[mdf["exists"]]
 
         # Add stats if anything is left
         if mdf.shape[0] > 0:
             fpaths = mdf["out_file"]
             out = fpaths.apply(self._add_stat)
-            mdf["fname"] = mdf["out_file"].parallel_apply(
-                lambda x: os.path.basename(x)
-            )
+            mdf["fname"] = mdf["out_file"].parallel_apply(os.path.basename)
             mdf = mdf[["job_id", "fname"]]
             mdf = mdf.join(out)
 
@@ -871,7 +849,7 @@ class RRLogs(No_Pipeline):
         """Run if only one sub folder is present in main run directory."""
         args = (self.folder, self.folders[0], self.module, self.status,
                 self.error, self.out)
-        df = self._run(args) 
+        df = self._run(args)
         return df
 
     def _stat_print(self, df, print_folder):
@@ -894,7 +872,6 @@ class RRLogs(No_Pipeline):
 
         # Color the table
         df = df.apply(color_column, axis=0)
-
         pdf = tabulate(df, showindex=False, headers=df.columns,
                        tablefmt="simple")
         print(f"{name}\n{pdf}")
@@ -990,7 +967,7 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '/projects/rev/projects/ffi/fy24/rev/solar/main'
+    folder = '/projects/rev/projects/naerm/fy25/rev_naerm/data/rasters/outputs/new_sample'
     sub_folder = folder
     error = None
     out = None
@@ -1004,9 +981,9 @@ if __name__ == "__main__":
     field = None
     count_aus = False
     verbose = True
-    self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
+    logs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
                   stats, count_aus=count_aus, verbose=verbose)
 
-    _, status = self.find_status(sub_folder)
+    _, status = logs.find_status(sub_folder)
 
-    self.main()
+    logs.main()

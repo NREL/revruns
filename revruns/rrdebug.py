@@ -45,7 +45,7 @@ class RRDebug:
 
     def __init__(self, module="pipeline", rundir=".", n_points=10):
         """Initialize RRDebug object.
-        
+
         Parameters
         ----------
         cmd : str

@@ -12,25 +12,30 @@ import json
 import os
 import psutil
 import shutil
-import tempfile
+import subprocess as sp
+import time
 import warnings
-import pathos.multiprocessing as mp
 
+from functools import cached_property
 from pathlib import Path, PosixPath
 
 import geopandas as gpd
 import h5py
 import numpy as np
 import pandas as pd
+import pathos.multiprocessing as mp
 import pyproj
 import rasterio as rio
 
-from pyproj import CRS, Transformer
+from osgeo_utils import gdal_calc
+from pyogrio.errors import DataSourceError
+from pyproj import CRS
 from rasterio import features
 from rasterio.merge import merge
-from shapely import geometry
-from shapely.ops import cascaded_union
-from tqdm import tqdm
+from rtree import index
+from shapely import geometry, MultiPolygon
+from shapely.ops import unary_union
+from tqdm.auto import tqdm
 
 from revruns.gdalmethods import warp
 from revruns.rr import crs_match, isint, isfloat
@@ -42,56 +47,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 NEEDED_FIELDS = ["name", "path"]
 
 
-def grid_chunks(df, nchunks):
-    """Create a grid to split a geodataframe into roughly `nchunks` parts."""
-    # Polygon Size
-    xmin, ymin, xmax, ymax = df.total_bounds
-    width = xmax - xmin
-    height = ymax - ymin
-
-    # Needed number of cells in each direction
-    yratio = height / width
-    xratio = width / height
-    nx = np.ceil(np.sqrt(nchunks) * xratio)
-    ny = np.ceil(np.sqrt(nchunks) * yratio)
-
-    # Each cell distance
-    ysize = height / ny
-    xsize = height / nx
-
-    # Build grid geometry
-    x = xmin
-    y = ymin
-    array = []
-    while y <= ymax:
-        while x <= xmax:
-            geom = geometry.Polygon([
-                (x, y),
-                (x, y + ysize),
-                (x + xsize, y + ysize),
-                (x + xsize, y),
-                (x, y)
-            ])
-            array.append(geom)
-            x += xsize
-        x = xmin
-        y += ysize
-
-    # Build grid geodataframe
-    grid = gpd.GeoDataFrame(array, columns=["geometry"], crs=df.crs)
-    grid["grid"] = grid.index
-
-    # Use the centriods to join with grid
-    df["geometry1"] = df["geometry"]
-    df["geometry"] = df["geometry1"].centroid
-    df = gpd.sjoin(df, grid, op="within", how="left")
-    df["geometry"] = df["geometry1"]
-    del df["geometry1"]
-    del df["index_right"]
-
-    return df
-
-
 def fopen():
     return psutil.Process().open_files()
 
@@ -99,222 +54,303 @@ def fopen():
 class Rasterizer:
     """Methods for rasterizing vectors."""
 
-    def __init__(self, flip=False, resolution=90, crs="esri:102008",
-                 template=None, temp_dir=None):
+    def __init__(self, src, flip=False, resolution=90, crs="esri:102008",
+                 template=None, temp_dir=None, chunk_size=10_000,
+                 multiprocess=False):
         """Initialize Rasterize object.
 
         Parameters
         ----------
+        src : str | list | gpd.geodataframe.GeoDataFrame
+            Path to source vector dataset file or list to such paths or a
+            geodataframe.
         template : str
             Path to template raster used for grid geometry. Optional.
         temp_dir : str
-            Path to directory to store temporary raster files.
+            Path to directory to store temporary raster and parquet files.
         flip : boolean
             Reverse values such that 1 represent cells outside of vector and
             0 represent within.
+        chunk_size : int
+            Chunk side size in meters to use to split `df` for multiprocessing.
+        multiprocess : boolean
+            Run in parallel on all available cores. This may only be used if
+            `src` is a string pointing to a singular file. Defaults to False.
         """
+        self.src = Path(src)
         self.template = template
         self.temp_dir = temp_dir
         self.resolution = resolution
         self.crs = crs
         self.flip = flip
+        self.chunk_size = chunk_size
+        self.multiprocess = multiprocess
 
-    def rasterize_partial(self, src, dst):
-        """Rasterize full vector dataset using percent coverage.
+        # Set georeferencing, read and process the source data
+        self._preflight()
 
-        Parameters
-        ----------
-        src : str | gpd.geodataframe.GeoDataFrame
-            Path to source vector dataset file or geodataframe.
-        dst : str
-            Path to destination GeoTiff file.
-        resolution : int
-            Target raster Resolution in units of src.
-        crs : str
-            Coordinate reference system of target GeoTiff. Use "epsg:<code>"
-            format. Will default to crs of src if not provided.
-        """
-        # Read in source dataset
-        if isinstance(src, str):
-            df = gpd.read_file(src)
+    def __repr__(self):
+        """Return Rasterizer representation string."""
+        attrs = [f"{k}={v}" for k, v in self.__dict__.items() if k != "inputs"]
+        pattrs = ",\n  ".join(attrs)
+        return f"<Rasterizer object:\n  {pattrs}>"
+
+    def _bounds(self, geom_list):
+        """Return the bounds of a geometry."""
+        # Get the bounds around all geometries
+        bounds = np.array([g.bounds for g in geom_list])
+
+        # Break out the coordinates
+        xmin = bounds[:, 0].min()
+        ymin = bounds[:, 1].min()
+        xmax = bounds[:, 2].max()
+        ymax = bounds[:, 3].max()
+
+        # If we have a template, align with that grid
+        if self.template:
+            with rio.open(self.template, "r") as r:
+                transform = r.profile["transform"]
+                xr, _, txmin, _, yr, tymax, _, _, _ = list(transform)
+                xs = [txmin + xr * i for i in range(r.width)]
+                ys = [tymax + yr * i for i in range(r.height)]
+            xmin = xs[np.abs(xs - xmin).argmin()] - self.resolution
+            xmax = xs[np.abs(xs - xmax).argmin()] + self.resolution
+            ymin = ys[np.abs(ys - ymin).argmin()] - self.resolution
+            ymax = ys[np.abs(ys - ymax).argmin()] + self.resolution
+
+        return xmin, ymin, xmax, ymax
+
+    def build_profile(self, transform, array):
+        """Build a Rasterio-style georeferecing dictionary."""
+        if not self.template:
+            profile = {
+                "transform": transform,
+                "height": array.shape[0],
+                "width": array.shape[1],
+                "count": 1,
+                "crs": self.crs,
+                "driver": "GTiff",
+                "dtype": array.dtype,
+                "nodata": None,
+                "tiled": False
+            }
         else:
-            df = src
+            with rio.open(self.template) as r:
+                profile = r.profile
+            profile["dtype"] = str(array.dtype)
 
-        # Set up temporary directory
-        if not self.temp_dir:
-            self.temp_dir = Path(dst).parent.joinpath("tmp")
-            self.temp_dir.mkdir(exist_ok=True)
+        return profile
+
+    def _clear_temp(self):
+        """Delete temporary files."""
         files = list(self.temp_dir.glob("*tif"))
         if files:
             for file in files:
                 os.remove(file)
 
-        # Read in template information
-        if self.template:
-            with rio.open(self.template) as r:
-                profile = r.profile
-                self.crs = CRS(profile["crs"])
+    def _consolidate_vectors(self, fpaths):
+        """Combine multiple vector files into one geodataframe."""
+        dfs = [gpd.read_parquet(fpath) for fpath in fpaths]
+        df = pd.concat(dfs)
+        return df
+
+    def _collect_geometries(self, geoseries):
+        """Collect and index geometries for a pandas group object."""
+        i = 0
+        geom_list = []
+        ridx = index.Index()
+        for geom in geoseries:
+            if isinstance(geom, MultiPolygon):
+                for part in geom.geoms:
+                    ridx.insert(i, part.bounds)
+                    geom_list.append(part)
+                    i += 1
+            else:
+                ridx.insert(i, geom.bounds)
+                geom_list.append(geom)
+                i += 1
+        return np.array(geom_list), ridx
+
+    @cached_property
+    def data(self):
+        """Read in or process a source file."""
+        # Read data with appropriate method
+        if isinstance(self.src, (str, PosixPath)):
+            try:
+                print(f"Reading in {self.src}...")
+                df = gpd.read_file(self.src)
+            except DataSourceError:
+                df = gpd.read_parquet(self.src)
+        elif isinstance(self.src, (list, tuple)):
+            print(f"Reading and consolidating {len(self.src)} files...")
+            df = self._consolidate_vectors(self.src)
+        else:
+            df = self.src
 
         # Set crs and project if needed
+        print("Setting coordinate reference information...")
         if not self.crs:
             self.crs = df.crs
-        if CRS(self.crs).to_wkt() != df.crs.to_wkt():  # Fails if not found
+        if CRS(self.crs).to_wkt() != df.crs.to_wkt():
             df = df.to_crs(self.crs)
 
-        # Comine arguments for multiprocessing routine
-        arg_list = self._get_args(df)
+        # Break out multi-polygons
+        df = df.explode()
 
-        # Run partial rasterization
-        tmps = []
-        with mp.Pool(mp.cpu_count() - 1) as pool:
-            for tmp in tqdm(pool.imap(self._rasterize_partial, arg_list),
-                            total=len(arg_list)):
-                tmps.append(tmp)
+        return df
 
-        # If template, use its bounds
-        if self.template:
-            with rio.open(self.template) as r:
-                bounds = tuple(r.bounds)
-        else:
-            bounds = None
+    def _exterior_ratio(self, geoms, transform, partial, ridx, idx):
+        """Calculate the coverage ratio for exterior cells of an array.
 
-        # Merge individual temporary rasters
-        nopen = len(fopen())
-        print(f"Open files: {nopen}")
-        datasets = [rio.open(tmp) for tmp in tmps]
-        array, transform = merge(
-            datasets,
-            bounds=bounds,
-            res=self.resolution,
-            method="max"
-        )
-        array = array[0]
+        Parameters
+        ----------
+        geom : list
+            List of shapely Polygons.
+        transform  : affine.Affine
+            Geo transformation represented by the partial grid.
+        partial : np.ndarray
+            A numpy array to contain the gridded form of the geometry
+            vectors.
+        ridx : rtree.index.Index
+            An R-Tree index containing extent information of each geometry.
+        idx : tuple
+            A two-item numpy array representing the y- and x-index positions
+            that require partial rasterization (i.e., cells along the
+            boundary of the geometries).
 
-        # Flip values if requested
-        if self.flip:
-            array = (array - 1) * -1
-
-        # Write to GeoTiff
-        if not self.template:
-            profile = {
-                'transform': transform,
-                'height': array.shape[0],
-                'width': array.shape[1],
-                'count': 1,
-                'crs': self.crs,
-                'driver': 'GTiff',
-                'dtype': 'float32',
-                'nodata': None,
-                'tiled': False
-            }
-        else:
-            profile["dtype"] = str(array.dtype)
-
-        with rio.open(dst, 'w', **profile) as file:
-            file.write(array, 1)
-
-        # Close and remove temporary files
-        for dataset in datasets:
-            dataset.close()
-        shutil.rmtree(self.temp_dir)
-
-    def _bounds(self, geom):
-        """Return the bounds of a geometry."""
-        bounds = np.array([g.bounds for g in geom])
-        xmin = bounds[:, 0].min()
-        ymin = bounds[:, 1].min()
-        xmax = bounds[:, 2].max()
-        ymax = bounds[:, 3].max()
-        return xmin, ymin, xmax, ymax
-
-    def _exterior_ratio(self, partial, boundary, geom, transform):
-        """Calculate the coverage ratio for exterior cells of an array."""
-        idx = np.where(boundary == 1)
-        for r, c in zip(*idx):
-            # Find cell bounds
-            window = ((r, r + 1), (c, c + 1))
-            ((row_min, row_max), (col_min, col_max)) = window
-            x_min, y_min = transform * (col_min, row_max)
-            x_max, y_max = transform * (col_max, row_min)
-            bounds = (x_min, y_min, x_max, y_max)
-
-            # Construct shapely geometry of cell and intersect with geometry
-            cell = geometry.box(*bounds)
-            overlap = cell.intersection(geom)
-
-            # update pctcover with percentage based on area proportion
-            ratio = (overlap.area / cell.area)
-            partial[r, c] = ratio
+        Returns
+        -------
+        np.ndarray : A numpy array containing partial rasterization values.
+        """
+        # Loop through each set of indices and calculate percent overlap
+        idxs = list(zip(*idx))
+        for ix in idxs:
+            partial = self._ratio(ix, partial, transform, ridx, geoms)
 
         return partial
 
-    def _get_args(self, df):
-        """Get arguments for multiprocessing."""
-        # The smaller the better for memory, note system open file limits
-        nrows = df.shape[0]
-        nsplit = np.ceil(nrows / mp.cpu_count())
-        nchunks = np.min([nrows, nsplit, 1_000])
+    def _build_inputs(self, vector_dst):
+        """Build initial inputs for the partial rasterization routine.
 
-        # Option #1: Split data frame into spatially neighboring grid cells
-        # df = grid_chunks(df, nchunks)
-        # geoms = [list(g[1]) for g in df.groupby("grid")["geometry"]]
+        Parameters
+        ----------
+        df : pd.core.frame.DataFrame
+            A pandas data frame of features to rasterize.
+        vector_dst : str | pathlib.PosixPath
+            Path to temporary vector dataset containing all pre-processed
+            geometries. Pre-processing includes unpacking multipolygons into
+            polygons, combining geometries from multiple files, and assigning
+            a grid ID after chunking geometries for parallel processing. This
+            will automatically be saved to a geoparquet, regardless of the
+            filename extension.
 
-        # Option 2: Split linearly
-        df["x"] = df["geometry"].centroid.x
-        df["y"] = df["geometry"].centroid.y
-        df = df.sort_values(["x", "y"])
-        geoms = np.array_split(df["geometry"].values, nchunks)
+        Returns
+        -------
+        list : A list of argument values for `_rasterize` or
+            `_rasterize_partial`.
+        """
+        # Split dataframe into spatially neighboring cells, collect indices
+        print("Building spatial partitioning grid...")
+        vector_dst = vector_dst.parent.joinpath(vector_dst.stem + ".parquet")
+        if not vector_dst.exists():
+            df = self.grid_chunks(self.data, chunk_size=self.chunk_size)
+            df.to_parquet(vector_dst)
+        else:
+            df = gpd.read_parquet(vector_dst)
 
-        # Build argument list
-        arg_list = []
-        for geom in geoms:
-            # Unpack target geometry
-            xmin, ymin, xmax, ymax = self._bounds(geom)
-            height, width = self._shape(geom)
-            shape = (height, width)
-            transform = rio.transform.from_bounds(
-                xmin, ymin, xmax, ymax, width, height
-            )
-            arg_list.append((geom, transform, shape))
+        # Collect geometry, build r-tree, unpack multi-polygons
+        print("Collecting geometry indices...")
+        inputs = []
+        for gid in df["grid"].unique():
+            entry = {"fpath": vector_dst, "gid": gid}
+            inputs.append(entry)
+        del df
 
-        return arg_list
+        return inputs
 
-    def _grid(self, df, nchunks):
-        """Create a grid to split a geodataframe."""
+    def grid_chunks(self, df, chunk_size=10_000):
+        """Create a grid to split a geodataframe into roughly `nchunks` parts.
+
+        Parameters
+        ----------
+        df : pd.core.frame.DataFrame
+            A pandas data frame of features to rasterize.
+        chunk_size : int
+            Chunk side size in meters to use to split `df` for multiprocessing.
+
+        Returns
+        -------
+        pd.core.frame.DataFrame : A data frame split into chunks according to the
+            `chunk_size` argument.
+        """
         # Polygon Size
         xmin, ymin, xmax, ymax = df.total_bounds
+        width = xmax - xmin
+        height = ymax - ymin
+
+        # Needed number of cells in each direction
+        nx = np.ceil(width / chunk_size)
+        ny = np.ceil(height / chunk_size)
+
+        # Each cell distance
+        ysize = height / ny
+        xsize = width / nx
+
+        # Build grid geometry
         x = xmin
         y = ymin
         array = []
-        size = 10_000
         while y <= ymax:
             while x <= xmax:
                 geom = geometry.Polygon([
                     (x, y),
-                    (x, y + size),
-                    (x + size, y + size),
-                    (x + size, y),
+                    (x, y + ysize),
+                    (x + xsize, y + ysize),
+                    (x + xsize, y),
                     (x, y)
                 ])
                 array.append(geom)
-                x += size
+                x += xsize
             x = xmin
-            y += size
-     
+            y += ysize
+
+        # Build grid geodataframe
         grid = gpd.GeoDataFrame(array, columns=["geometry"], crs=df.crs)
+        grid["geometry"] = grid["geometry"].buffer(self.resolution * 2)
         grid["grid"] = grid.index
-        df = gpd.sjoin(df, grid)
+
+        # Cut the input geometries by this grid
+        df = gpd.overlay(df, grid, how="intersection")
+
+        # Sort by grid and reindex so we read using slices
+        df = df.sort_values("grid")
+        df = df.reset_index()
 
         return df
+
+    def _preflight(self):
+        """Read in source data, set georeferencing, process data."""
+        # Read in template information
+        if self.template:
+            print("Reading template information...")
+            with rio.open(self.template) as r:
+                profile = r.profile
+                self.crs = CRS(profile["crs"])
 
     def _rasterize(self, geom, shape, transform, exterior=False):
         """Rasterize a single geometry."""
         # Build shapes and account for multipolygons
-        if exterior:
-            shapes = [(g.exterior, 1) for g in geom]
+        if isinstance(geom, geometry.MultiPolygon):
+            if exterior:
+                shapes = [(g.exterior, 1) for g in geom.geoms]
+            else:
+                shapes = [(g, 1) for g in geom.geoms]
         else:
-            shapes = [(g, 1) for g in geom]
-        
+            if exterior:
+                shapes = [(g.exterior, 1) for g in geom]
+            else:
+                shapes = [(g, 1) for g in geom]
+
         # Build array
         array = rio.features.rasterize(
             shapes=shapes,
@@ -326,43 +362,172 @@ class Rasterizer:
 
         return array
 
-    def _rasterize_partial(self, args):
+    def rasterize_partial(self, dst):
+        """Rasterize full vector dataset using percent coverage.
+
+        Parameters
+        ----------
+        dst : str | pathlib.PosixPath
+            Path to destination GeoTiff file.
+        """
+        # Read in the file and clear the temporary
+        start = time.time()
+        dst = Path(dst)
+        if not dst.name.endswith(".tif"):
+            raise OSError(f"Cannot write outputs to {dst}, GeoTiff format "
+                          "required.")
+        if not self.temp_dir:
+            self.temp_dir = dst.parent.joinpath("tmp")
+        self.temp_dir.mkdir(exist_ok=True)
+
+        # Chunk data frame and return argument list
+        vector_dst = self.temp_dir.joinpath(
+            dst.name.replace(".tif", ".parquet")
+        )
+        input_list = self._build_inputs(vector_dst)
+
+        # Run partial rasterization
+        tmps = []
+        if self.multiprocess:
+            n = mp.cpu_count()
+            print(f"Performing partial rasterization with {n} cores...")
+            with mp.ThreadPool(n) as pool:
+                for tmp in tqdm(pool.imap(self._rasterize_partial, input_list),
+                                total=len(input_list)):
+                    tmps.append(tmp)
+        else:
+            print("Performing partial rasterization with 1 core...")
+            for inputs in tqdm(input_list):
+                tmps.append(self._rasterize_partial(inputs))
+        tmps = [str(tmp) for tmp in tmps if tmp]
+        print(f"Finished partial rasterization.")
+
+        # Merge individual temporary rasters (python method hangs with SLURM)
+        print("Merging rasterized arrays...")
+        res = str(self.resolution)
+        cmd = ["rio", "merge", "--method=max",  "-r",  res, *tmps,
+               f"--output={str(dst)}", "--co", "CHECK_DISK_FREE_SPACE=NO"]
+        out = sp.run(cmd, capture_output=True)
+        stderr = out.stderr.decode()
+        assert out.returncode == 0, f"Error merging rasters: {stderr}"
+
+        # Flip values if requested
+        if self.flip:
+            print("Flipping values...")
+            flip_dst = dst.parent.joinpath(dst.stem + "_flip.tif")
+            gdal_calc.Calc("(A - 1) * -1", A=dst, outfile=flip_dst)
+            shutil.move(flip_dst, dst)
+
+        # # Write to GeoTiff
+        # print(f"Writing output to {dst}...")
+        # profile = self.build_profile(transform=transform, array=array)
+        # with rio.open(dst, "w", **profile) as file:
+        #     file.write(array, 1)
+
+        # Close and remove temporary files
+        print("Removing temporary files...")
+        for tmp in tmps:
+            os.remove(tmp)
+
+        # Print runtime
+        end = time.time()
+        duration = round((end - start) / 60, 2)
+        print(f"Finished, {duration} minutes")
+
+    def _rasterize_partial(self, inputs):
         """Rasterize geometry with percent coverage for partial cells."""
-        # Unpack arguments
-        geom, transform, shape = args
+        # Read in inputs
+        try:
+            fpath = inputs["fpath"]
+            gid = inputs["gid"]
 
-        # Create single geometry
-        geom = cascaded_union(geom)
+            # Create destination file, only run if needed
+            tmp = f"{Path(fpath.stem)}_{gid:04d}"
+            dst = Path(self.temp_dir.joinpath(tmp + ".tif"))
+            if not dst.exists():
 
-        # Create full and boundary arrays
-        full = self._rasterize(geom, shape, transform)
-        boundary = self._rasterize(geom, shape, transform, exterior=True)
+                # Read in this grid chunk of the vector
+                df = gpd.read_parquet(fpath, filters=[("grid", "==", gid)])
+                geoms, ridx = self._collect_geometries(df["geometry"])
 
-        # Remove boundary cells from full array
-        partial = (full - boundary).astype("float32")
+                # Build georefencing information
+                xmin, ymin, xmax, ymax = self._bounds(geoms)
+                height, width = self._shape(geoms)
+                shape = (height, width)
+                transform = rio.transform.from_bounds(
+                    xmin, ymin, xmax, ymax, width, height
+                )
 
-        # Loop through indicies of all exterior cells and calc ratio
-        partial = self._exterior_ratio(partial, boundary, geom, transform)
+                # Create full and boundary arrays (inside and outline of shape)
+                full = self._rasterize(geoms, shape, transform)
+                boundary = self._rasterize(geoms, shape, transform,
+                                           exterior=True)
+                partial = (full - boundary).astype("float32")
 
-        # Save to temporary file
-        profile = {
-            'transform': transform,
-            'height': shape[0],
-            'width': shape[1],
-            'count': 1,
-            'crs': self.crs,
-            'driver': 'GTiff',
-            'dtype': 'float32',
-            'nodata': None,
-            'tiled': False
-        }
+                # Find the index position of the boundary cells
+                idx = np.where(boundary == 1)
 
-        tmp = next(tempfile._get_candidate_names())
-        dst = str(self.temp_dir.joinpath(tmp + ".tif"))
-        with rio.open(dst, 'w', **profile) as file:
-            file.write(partial, 1)
+                # Loop through indicies of all exterior cells and calc ratio
+                partial = self._exterior_ratio(geoms, transform, partial, ridx,
+                                               idx)
+
+                # Build a georeferencing dictionary
+                profile = {
+                    "transform": transform,
+                    "height": partial.shape[0],
+                    "width": partial.shape[1],
+                    "count": 1,
+                    "crs": self.crs,
+                    "driver": "GTiff",
+                    "dtype": partial.dtype,
+                    "nodata": None,
+                    "tiled": False
+                }
+
+                # Save to temporary file
+                if partial.shape != (1, 1):
+                    with rio.open(dst, "w", **profile) as file:
+                        file.write(partial, 1)
+                else:
+                    dst = None
+
+        except Exception as e:
+            print(f"Exception on {dst}: {e}.")
+            raise
 
         return dst
+
+    def _ratio(self, ix, partial, transform, ridx, geoms):
+        """Calculate the ratio of geometry coverage within a cell."""
+        row_min, col_min = ix
+        row_max = row_min + 1
+        col_max = col_min + 1
+        try:
+            # Find cell bounds
+            x_min, y_min = transform * (col_min, row_max)
+            x_max, y_max = transform * (col_max, row_min)
+            bounds = x_min, y_min, x_max, y_max
+
+            # Check if any geometries intersect using the R-Tree index
+            keepers = [r for r in ridx.intersection(bounds)]
+            cell_geoms = geoms[keepers]
+            cell = geometry.box(*bounds)
+            overlap = cell.intersection(cell_geoms)
+            overlap = [g for g in overlap if not g.is_empty]
+
+            # Construct shapely geometry of cell and intersect geometry
+            if overlap:
+                if len(overlap) > 1:
+                    overlap = unary_union(overlap)
+                else:
+                    overlap = overlap[0]
+                ratio = (overlap.area / cell.area)
+                partial[row_min, col_min] = ratio
+        except Exception as e:
+            print(e)
+            raise
+
+        return partial
 
     def _shape(self, geom):
         """Return target shape for geometry."""
@@ -411,7 +576,7 @@ class Exclusions:
         dtype = profile["dtype"]
         profile = dict(profile)
 
-        # We need a 6 element geotransform, sometimes we receive three extra <- why?
+        # We need a 6 element geotransform, sometimes we receive three extra
         profile["transform"] = profile["transform"][:6]
 
         # Add coordinates and else check that the new file matches everything
@@ -475,49 +640,18 @@ class Exclusions:
             description = desc_dict[dname]
             self.add_layer(dname, file, description, overwrite=overwrite)
 
-    def techmap(self, res_fpath, dname, max_workers=None, map_chunk=2560,
-                distance_upper_bound=None, save_flag=True):
-        """Build a mapping grid between exclusion resource data.
-
-        Parameters
-        ----------
-        res_fpath : str
-            Filepath to HDF5 resource file.
-        dname : str
-            Dataset name in excl_fpath to save mapping results to.
-        max_workers : int, optional
-            Number of cores to run mapping on. None uses all available cpus.
-            The default is None.
-        distance_upper_bound : float, optional
-            Upper boundary distance for KNN lookup between exclusion points and
-            resource points. None will calculate a good distance based on the
-            resource meta data coordinates. 0.03 is a good value for a 4km
-            resource grid and finer. The default is None.
-        map_chunk : TYPE, optional
-          Calculation chunk used for the tech mapping calc. The default is
-            2560.
-        save_flag : boolean, optional
-            Save the techmap in the excl_fpath. The default is True.
-        """
-        from reV.supply_curve.tech_mapping import TechMapping
-
-        # If saving, does it return an object?
-        arrays = TechMapping.run(self.excl_fpath, res_fpath, dname,
-                                 max_workers=None, sc_resolution=2560)
-        return arrays
-
     def _check_dims(self, path):
         # Check new layers against the first6 added raster
         if self.profile is not None:
             old = self.profile
             dname = os.path.basename(path)
-            with rio.open(path, "r") as r:    
+            with rio.open(path, "r") as r:
                 new = r.profile
 
             # Check the CRS
             if not crs_match(old["crs"], new["crs"]):
                 raise AssertionError(f"CRS for {dname} does not match "
-                                      "exisitng CRS.")
+                                     "exisitng CRS.")
 
             # Check the transform
             try:
@@ -535,13 +669,13 @@ class Exclusions:
                 assert old["height"] == new["height"]
             except AssertionError:
                 print(f"Width and/or height for {dname} does not match "
-                       "existing dimensions.")
+                      "existing dimensions.")
                 raise
 
     def _convert_coords(self, xs, ys):
         # Convert projected coordinates into WGS84
         print("Transforming xy...")
-        mx, my = np.meshgrid(xs, ys)
+        # mx, my = np.meshgrid(xs, ys)
         crs = CRS(self.profile["crs"])
         if "World Geodetic System 1984" in crs.datum.name:
             tcrs = CRS("epsg:4326")
@@ -552,8 +686,32 @@ class Exclusions:
         else:
             tcrs = CRS("epsg:4326")
 
-        transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
-        lons, lats = transformer.transform(mx, my)
+        # transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
+        # lons, lats = transformer.transform(mx, my)
+
+        # Added because original takes lots of memory for higher resolution
+        min_x, max_x = np.min(xs), np.max(xs)
+        min_y, max_y = np.min(ys), np.max(ys)
+
+        corners = [
+            geometry.Point(min_x, min_y),
+            geometry.Point(min_x, max_y),
+            geometry.Point(max_x, min_y),
+            geometry.Point(max_x, max_y)
+        ]
+        gdf = gpd.GeoDataFrame({
+            "geometry": corners
+        }, geometry=corners, crs=crs)
+        gdf = gdf.to_crs(tcrs)
+
+        x_corners, y_corners = zip(*[(point.x, point.y)
+                                     for point in gdf.geometry])
+        x_trans = np.linspace(np.min(x_corners), np.max(x_corners),
+                              num=len(xs), dtype="float32")
+        y_trans = np.linspace(np.min(y_corners), np.max(y_corners),
+                              num=len(ys), dtype="float32")
+
+        lons, lats = np.meshgrid(x_trans, y_trans)
 
         return lons, lats
 
@@ -590,7 +748,7 @@ class Exclusions:
             with h5py.File(self.excl_fpath, "r+") as ds:
                 for akey, attr in self.attrs.items():
                     if isinstance(attr, (list, dict)):
-                        attr = json.dumps(attr) 
+                        attr = json.dumps(attr)
                     ds.attrs[akey] = attr
 
     def _preflight(self):
@@ -678,9 +836,9 @@ class Reformatter(Exclusions):
             Dictionary or path dictionary of raster value, key pairs
             derived from shapefiles containing string values (optional).
         multithread : boolean
-            Use mutlithreading in each GDAL process (all available threads). 
+            Use mutlithreading in each GDAL process (all available threads).
         parallel : boolean
-             Process each dataset in parallel (all cores - 1). 
+             Process each dataset in parallel (all cores - 1).
         gdal_cache_max : int
             Maximum cache storage in MW. If not set, it uses the GDAL default.
         """
@@ -726,7 +884,8 @@ class Reformatter(Exclusions):
             "compress": "lzw",
             "tiled": "yes",
             "blockxsize": 128,  # How to optimize internal tiling?
-            "blockysize": 128
+            "blockysize": 128,
+            "BIGTIFF": "YES"
         }
         return ops
 
@@ -782,25 +941,17 @@ class Reformatter(Exclusions):
         if not os.path.exists(path):
             raise OSError(f"{path} does not exist.")
 
-        # If theres no template, make sure it matches the excl file  <--------- Still thinking how i want this to work
-        # if self.template is not None:
-        #     try:
-        #         self._check_dims(path)
-        #     except:
-        #         raise
-
         # Run warp if needed
         if os.path.exists(dst) and self.overwrite_tif:
             os.remove(dst)
-        elif not os.path.exists(dst):
-            warp(
-                src=path,
-                dst=dst,
-                template=self.template,
-                creation_ops=self.creation_options,
-                multithread=self.multithread,
-                cache_max=self.gdal_cache_max
-            )
+        warp(
+            src=path,
+            dst=dst,
+            template=self.template,
+            creation_ops=self.creation_options,
+            multithread=self.multithread,
+            cache_max=self.gdal_cache_max
+        )
 
     def reformat_vectors(self):
         """Reformat all vector files in inputs."""
@@ -848,7 +999,6 @@ class Reformatter(Exclusions):
         # Remove if overwrite
         if self.overwrite_tif and os.path.exists(dst):
             os.remove(dst)
-
         # Read and process file
         gdf = self._process_vector(name, path, field, buffer)
         if not os.path.exists(dst):
@@ -861,7 +1011,7 @@ class Reformatter(Exclusions):
             transform = meta["transform"]
             with rio.Env():
                 array = features.rasterize(shapes, out_shape, all_touched=True,
-                                           transform=transform)
+                                           transform=transform, dtype="uint8")
 
             # Attempt to set best dtype
             dtype = str(array.dtype)
@@ -953,7 +1103,7 @@ class Reformatter(Exclusions):
 
         # Update the string lookup dictionary
         self.lookup[layer_name] = string_map
-    
+
         return gdf
 
     def _process_vector(self, name, path, field=None, buffer=None):

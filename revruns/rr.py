@@ -347,11 +347,6 @@ class PandasExtension:
                 x[g] = np.average(values, weights=weights)
         return x
 
-    def bmap(self):
-        """Show a map of the data frame with a basemap if possible."""
-        if not isinstance(self._obj, gpd.geodataframe.GeoDataFrame):
-            print("Data frame is not a GeoDataFrame")
-
     def decode(self):
         """Decode the columns of a meta data object from a reV output."""
         import ast
@@ -502,8 +497,8 @@ class PandasExtension:
 
         return df
 
-    def nearest(self, df2, fields=None, lat=None, lon=None, no_repeat=False,
-                k=5):
+    def nearest(self, df2, fields=None, id_field=None, x=None, y=None, k=5,
+                dist_max=5_000, workers=1, jsonify=True):
         """Find all of the closest points in a second data frame.
 
         Parameters
@@ -513,19 +508,30 @@ class PandasExtension:
             match all points in the first data frame.
         fields : str | list
             The field(s) in the second data frame to append to the first.
-        lat : str
-            The name of the latitude field.
-        lon : str
-            The name of the longitude field.
-        no_repeat : logical
-            Return closest points with no duplicates. For two points in the
-            left dataframe that would join to the same point in the right, the
-            point of the left pair that is closest will be associated with the
-            original point in the right, and other will be associated with the
-            next closest. (not implemented yet)
+        id_field : str
+            A field in df2 to use as the identifer. If None, the index of each
+            nearest row is used. Defaults to None.
+        x : str
+            The name of the x coordinate field in both data frames. If no x is
+            provided it will be derived from the geomtry field of geodataframes
+            or inferred from available column names if a dataframe.
+        y : str
+            The name of the y coordinate field in both data frames. If no y is
+            provided it will be derived from the geomtry field of geodataframes
+            or inferred from available column names if a dataframe.
         k : int
             The number of next closest points to calculate when no_repeat is
             set to True. If no_repeat is false, this value is 1.
+        dist_max : numeric
+            If k > 1, only return values that are less than or equal to this
+            values.
+        workers : int, optional
+            Optional number of workers to use for parallel processing in the
+            cKDTree step. If -1 is given all CPU threads are used. Default: 1. 
+        jsonify : boolean
+            Convert output coordinate lists to JSON. This is useful if you are
+            writing the output to a file with a driver that does not
+            automatically perform this step.
 
         Returns
         -------
@@ -536,23 +542,26 @@ class PandasExtension:
         # Pull out the target data frame
         df1 = self._obj.copy()
 
-        # Locate the coordinate fields for the target data frame
-        x1 = "x"
-        y1 = "y"
-        if isinstance(df1, gpd.geodataframe.GeoDataFrame):
-            df1["x"] = df1["geometry"].x
-            df1["y"] = df1["geometry"].y
+        # Locate the coordinate fields each data frame
+        if x and y:
+            x1 = x2 = x
+            y1 = y2 = y
         else:
-            y1, x1 = self.find_coords(df1)
+            if isinstance(df1, gpd.geodataframe.GeoDataFrame):
+                x1 = "x"
+                y1 = "y"
+                df1[x1] = df1["geometry"].x
+                df1[y1] = df1["geometry"].y
+            else:
+                y1, x1 = self.find_coords(df1)
 
-        # Locate the coordinate fields for the second data frame
-        x2 = "x"
-        y2 = "y"
-        if isinstance(df1, gpd.geodataframe.GeoDataFrame):
-            df2["x"] = df2["geometry"].x
-            df2["y"] = df2["geometry"].y
-        else:
-            y2, x2 = self.find_coords(df2)
+            if isinstance(df2, gpd.geodataframe.GeoDataFrame):
+                x2 = "x"
+                y2 = "y"
+                df2[x2] = df2["geometry"].x
+                df2[y2] = df2["geometry"].y
+            else:
+                y2, x2 = self.find_coords(df2)
 
         # Choose target fields from second data frame
         if fields:
@@ -565,13 +574,21 @@ class PandasExtension:
         crds1 = df1[[x1, y1]].values
         crds2 = df2[[x2, y2]].values
 
+        # If df2 has fewer than k entries
+        if df2.shape[0] < k:
+            k = df2.shape[0]
+
         # Build the connections tree and query points from the first df
         tree = cKDTree(crds2)
-        if no_repeat:
-            dist, idx = tree.query(crds1, k=k)
-            # dist, idx = self._derepeat(dist, idx)  # Where did _derepeat go?
+        dist, idx = tree.query(crds1, k=k, workers=workers)
+
+        # Use either user-defined identifier field or the original index
+        if id_field:
+            index = df2[id_field].values
         else:
-            dist, idx = tree.query(crds1, k=1)
+            index = df2.index
+        imap = dict(zip(np.arange(0, df2.shape[0], 1), index))
+        idx = np.vectorize(lambda x: imap[x])(idx)
 
         # We might be relacing a column
         for field in fields:
@@ -580,24 +597,35 @@ class PandasExtension:
 
         # Rebuild the dataset
         dfa = df1.reset_index(drop=True)
-        dfb = df2.iloc[idx, :]
-        dfb = dfb.reset_index(drop=True)
-        df = pd.concat([dfa, dfb[fields], pd.Series(dist, name='dist')],
-                       axis=1)
+        if k == 1:
+            dfb = df2.loc[idx, :]
+            dfb = dfb.reset_index(drop=True)
+            dfa = pd.concat([dfa, dfb[fields], pd.Series(dist, name='dist')],
+                            axis=1)
+        else:
+            # Assign collections of distances
+            dist_df = pd.DataFrame(dist)
+            idx_df = pd.DataFrame(idx)
+            dist_lists = dist_df.apply(self._collect, dist_max=dist_max,
+                                       axis=1)
+            idx_lists = idx_df.apply(self._collect, dist_max=None,
+                                     axis=1)
 
-        return df
+            dfa.loc[:, "dist_list"] = dist_lists.values
+            dfa.loc[:, "idx_list"] = idx_lists.values
+            if dist_max:
+                dfa["len"] = dfa["dist_list"].apply(lambda x: len(x))
+                dfa["idx_list"] = dfa.apply(
+                    lambda x: x["idx_list"][: x["len"]],
+                    axis=1
+                )
+                del dfa["len"]
 
-    # def papply(self, func, **kwargs):
-    #     """Apply a function to a dataframe in parallel chunks."""
-    #     from pathos import multiprocessing as mp
+            if jsonify:
+                dfa["dist_list"] = dfa["dist_list"].apply(json.dumps)
+                dfa["idx_list"] = dfa["idx_list"].apply(json.dumps)
 
-    #     from itertools import product
-
-    #     df = self._obj.copy()
-    #     cdfs = np.array_split(df, os.cpu_count() - 1)
-    #     pool = mp.Pool(mp.cpu_count() - 1)
-    #     args = [(cdf, kwargs) for cdf in cdfs]
-    #     out = pool.starmap(cfunc, args)
+        return dfa
 
     def scatter(self, x="capacity", y="mean_lcoe", z=None, color="mean_lcoe",
                 size=None):
@@ -622,7 +650,7 @@ class PandasExtension:
                 (df["latitude"] <= bbox[3])]
         return df
 
-    def to_geo(self, lat=None, lon=None):
+    def to_geo(self, lat=None, lon=None, crs='epsg:4326'):
         """Convert a Pandas data frame to a geopandas geodata frame."""
         # Let's not transform in place
         df = self._obj.copy()
@@ -649,11 +677,9 @@ class PandasExtension:
 
                 # Create the geodataframe - add in projections
                 if "geometry" in df.columns:
-                    gdf = gpd.GeoDataFrame(df, crs='epsg:4326',
-                                                geometry="geometry")
+                    gdf = gpd.GeoDataFrame(df, crs=crs, geometry="geometry")
                 if "geom" in df.columns:
-                    gdf = gpd.GeoDataFrame(df, crs='epsg:4326',
-                                                geometry="geom")
+                    gdf = gpd.GeoDataFrame(df, crs=crs, geometry="geom")
             else:
                 gdf = df
 
@@ -704,6 +730,12 @@ class PandasExtension:
                 raise
 
         return array, dtypes
+
+    def _collect(self, row, dist_max=None):
+        """Return list of values in a pandas series."""
+        if dist_max:  # Don't specify if not collecting distance
+            row = row[row <= dist_max]
+        return list(row)
 
     def _delist(self, value):
         """Extract the value of an object if it is a list with one value."""

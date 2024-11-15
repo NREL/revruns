@@ -7,10 +7,11 @@ Created on Wed Jun 24 20:52:25 2020
 """
 import os
 
-from osgeo import gdal
 from reV.cli import commands
 
 
+# For package data
+ROOT = os.path.abspath(os.path.dirname(__file__))
 
 # For filtering COUNS
 CONUS_FIPS = ["54", "12", "17", "27", "24", "44", "16", "33", "37", "50", "09",
@@ -19,16 +20,14 @@ CONUS_FIPS = ["54", "12", "17", "27", "24", "44", "16", "33", "37", "50", "09",
               "23", "36", "32", "26", "05", "28", "29", "30", "20", "18", "46",
               "25", "51", "11", "19", "04"]
 
-# For package data
-ROOT = os.path.abspath(os.path.dirname(__file__))
-
-
 # For checking if a requested output requires economic treatment.
-ECON_MODULES = ["flip_actual_irr",
-                "lcoe_nom",
-                "lcoe_real",
-                "ppa_price",
-                "project_return_aftertax_npv"]
+ECON_MODULES = [
+    "flip_actual_irr",
+    "lcoe_nom",
+    "lcoe_real",
+    "ppa_price",
+    "project_return_aftertax_npv"
+]
 
 # Checks for reasonable model output value ranges. No scaling factors here.
 VARIABLE_CHECKS = {
@@ -65,7 +64,7 @@ RESOURCE_DATASETS = {
         "wtk_canada_v1_1bc": ("/datasets/WIND/canada/v1.1.0bc/" +
                                 "wtk_canada_{}.h5"),
         "wtk_mexico_v1_1": "/datasets/WIND/mexico/v1.0.0/wtk_mexico_{}.h5"
-        }
+}
 
 
 # The title of each resource data set.
@@ -88,7 +87,7 @@ RESOURCE_LABELS = {
                                "Toolkit - Canada, v1.1.0bc"),
         "wtk_mexico_v1_1": ("Wind Integration National Dataset (WIND) " +
                              "Toolkit - Mexico, v1.0.0"),
-        }
+}
 
 
 PIPELINE_TEMPLATE = {

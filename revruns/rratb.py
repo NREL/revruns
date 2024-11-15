@@ -56,6 +56,16 @@ TURBINE_CLASSES = {  # Keys represent top of ws bin @ 110 m/s
     6.5: "T3",
     5.9: "T4"
 }
+SCENARIO_CONVERSIONS = {  # Old ATB's have different scenario names
+    "Mid": "Moderate",
+    "Low": "Advanced",
+    "High": "Conservative",
+    "Moderate": "Moderate",
+    "Advanced": "Advanced",
+    "Conservative": "Conservative",
+    "*": "*"
+}
+
 
 
 class ATB:
@@ -132,8 +142,19 @@ class ATB:
         float : Value representing capital cost for the given year, technology,
                 resource class, scenario, and technology sub-class.
         """
+        # Read in data associated with this tech and year
         df = self.data.copy()
-        df = df[df["core_metric_parameter"] == "OCC"]
+
+        # Older ATB releases don't include Overnight Capital Costs
+        if "OCC" in df["core_metric_parameter"]:
+            df = df[df["core_metric_parameter"] == "OCC"]
+        else:
+            raise NotImplementedError(f"No overnight captial cost available "
+                                      f"in the {self.atb_year} ATB.")
+            # Assuming 1 year of construction
+            # pattern = "Interest During Construction"
+            # idc = df[df["core_metric_parameter"].str.contains(pattern)]
+
         df = self._filter(df, res_class=res_class, tech=tech)
         return df["value"]
 
@@ -215,15 +236,22 @@ class ATB:
     @property
     def data(self):
         """Return the filtered dataset."""
+        # Copy original data frame
         df = self.full_data.copy()
+
+        # Standardize tech fields
         df[self.tech_field] = df[self.tech_field].apply(
             lambda x: x.replace("-", "").replace(" ", "").lower()
+              if isinstance(x, str) else x
         )
+
+        # Filter for technology and cost year
         df = df[df[self.tech_field] == self.tech_alias]
         df = df[df["core_metric_variable"] == self.cost_year]
 
-        # This filters out the construction financing
-        df = df[df["scenario"] == self.scenario.capitalize()]
+        # Account for scenario naming discrepancies
+        df["scenario"] = df["scenario"].map(SCENARIO_CONVERSIONS)
+        df = df[df["scenario"].isin([self.scenario.capitalize(), "*"])]
         df = df[df["core_metric_case"] == CASES[self.case]]
         df = df[df["crpyears"].astype(str) == str(self.lifetime)]
         df.reset_index(drop=True, inplace=True)
@@ -274,6 +302,29 @@ class ATB:
         df = self._filter(df, res_class=res_class, tech=tech)
         return df["value"]
 
+    def fcr(self, res_class=None, tech=None):
+        """Return fcr for given tech and year.
+
+        Parameters
+        ----------
+        res_class : int
+            Resource class number from 1 to 10. Defaults to class 1.
+        tech : int
+            Technology subclass selection number. New for wind in 2023 since
+            there are now several different turbines that are appropriate for
+            different resource classes. Ranges from 1 to 4.
+
+        Returns
+        -------
+        float : Value representing fixed charge rate for the given
+                year, technology, resource class, scenario, and technology
+                sub-class.
+        """
+        df = self.data.copy()
+        df = df[df["core_metric_parameter"] == "FCR"]
+        df = self._filter(df, res_class=res_class, tech=tech)
+        return df["value"]
+
     @classmethod
     @property
     def technologies(cls):
@@ -290,7 +341,10 @@ class ATB:
 
     def _filter(self, df, tech=None, res_class=None):
         if not res_class and not tech:
-            df = df[df["techdetail"].str.endswith("1")].iloc[0]
+            if df[df["techdetail"].str.endswith("1")].empty:
+                df = df[df["techdetail"].str.endswith("*")].iloc[0]
+            else:
+                df = df[df["techdetail"].str.endswith("1")].iloc[0]
         if res_class:
             df = df[df["techdetail"] .str.endswith(f"{res_class}")].iloc[0]
         if tech:

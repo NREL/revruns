@@ -44,7 +44,7 @@ CUT_HELP = ("Path to vector file to use to clip output. (str)")
 
 
 
-def write_raster(grid, geotransform, crs, dst):
+def write_raster(grid, transform, crs, dst):
     """Write an array to a geotiff."""
     # Format the CRS
     crs = CRS(crs)
@@ -58,7 +58,7 @@ def write_raster(grid, geotransform, crs, dst):
         'height': grid.shape[0],
         'count': 1,
         'crs': crs,
-        'transform': geotransform,
+        'transform': transform,
         'tiled': False,
         'interleave': 'band'
      }
@@ -71,6 +71,9 @@ def write_raster(grid, geotransform, crs, dst):
 def csv(src, dst, variable, resolution, crs, fillna, cutline):
     # This is inefficient
     df = pd.read_csv(src)
+    if "geometry" in df:
+        del df["geometry"]
+        df = pd.DataFrame(df)
     gdf = df.rr.to_geo()
     gdf = gdf[["geometry", variable]]
 
@@ -78,11 +81,10 @@ def csv(src, dst, variable, resolution, crs, fillna, cutline):
     gdf = gdf.to_crs(crs)
 
     # And finally rasterize
-    data = gdf[variable].values
-    grid, geotransform, gridy, gridx = to_grid(gdf, data, resolution)
+    grid, transform, gridy, gridx = to_grid(gdf, variable, resolution)
 
     # And write to raster
-    write_raster(grid, geotransform, crs, dst)    
+    write_raster(grid, transform, crs, dst)
 
 
 def get_scale(ds, variable):
@@ -104,10 +106,10 @@ def gpkg(src, dst, variable, resolution, crs, fillna, cutline):
     gdf = gdf.to_crs(crs)
 
     # Convert to true grid
-    array, transform = to_grid(gdf, gdf[variable], resolution)
+    grid, transform, gridy, gridx = to_grid(gdf, gdf[variable], resolution)
 
-    # And finally rasterize
-    rrasterize(gdf, resolution, dst, fillna, cutline)
+    # And write to raster
+    write_raster(grid, transform, crs, dst)
 
 
 def h5(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
@@ -246,15 +248,15 @@ def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
     os.remove(tmp_src)
 
 
-def to_grid(gdf, data, resolution):
+def to_grid(gdf, variable, resolution):
     """Convert coordinates from an irregular point dataset into an even grid.
 
     Parameters
     ----------
     gdf : geopandas.geodataframe.GeoDataFrame
         A geopandas data frame of coordinates.
-    data : np.ndarray
-        Numpy array of data.
+    variable : str
+        Variable to covert to a grid.
     resolution: int | float
         The resolution of the target grid.
 
@@ -271,10 +273,14 @@ def to_grid(gdf, data, resolution):
     frame, and generated the arrays as dask arrays we might be able to save
     space.
     """
+    # Get the data
+    data = gdf[variable].values
+
     # Get the extent
     minx, miny, maxx, maxy = gdf.total_bounds
 
     # These are centroids of points, we want top left corners
+    resolution = int(resolution)
     minx -= (resolution / 2)
     maxx -= (resolution / 2)
     miny += (resolution / 2)
@@ -289,8 +295,8 @@ def to_grid(gdf, data, resolution):
     geotransform = [resolution, 0, minx, 0, -resolution, maxy]
 
     # Get source point coordinates
-    gdf["y"] = gdf["geometry"].apply(lambda p: p.y + (resolution / 2))
     gdf["x"] = gdf["geometry"].apply(lambda p: p.x - (resolution / 2))
+    gdf["y"] = gdf["geometry"].apply(lambda p: p.y + (resolution / 2))
     points = gdf[["y", "x"]].values
 
     # Build kdtree  # <-------------------------------------------------------- Nearest neighbor is not appropriate for the irregular grids like the WTK, what to do? Interpolate here?
@@ -347,15 +353,14 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
 
 
 if __name__ == "__main__":
-    resolution = 11_520
+    resolution = 2_500
     crs = "esri:102008"
-    variable = "mean_cf_dc"
-    cutline = "~/data/vectors/conus_coastal_draft.gpkg"
-    src = "~/review_datasets/seto_fy23/scratch/01_reference_supply-curve.csv"
-    dst = "~/review_datasets/seto_fy23/scratch/01_reference_supply-curve_cf.tif"
+    variable = "cf_mean"
+    cutline = None
+    src = "/Users/twillia2/transfer/geotherm_gen_sample.csv"
+    dst = "/Users/twillia2/transfer/geotherm_gen_sample.tif"
     dst = os.path.expanduser(dst)
-    fillna = False
+    fillna = True
     if os.path.exists(dst):
         os.remove(dst)
     csv(src, dst, variable, resolution, crs, fillna, cutline)
-
