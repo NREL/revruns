@@ -726,7 +726,7 @@ class Exclusions:
 
         # Not doing rotations here
         xs = [ulx + col * xres for col in range(self.profile["width"])]
-        ys = [uly + row * yres for row in range(self.profile["height"])]
+        ys = [uly + row * yres for row in range(self.profile["height"])][::-1]
 
         # Let's not use float 64
         xs = np.array(xs).astype("float32")
