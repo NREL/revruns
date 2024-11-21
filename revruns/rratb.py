@@ -15,11 +15,15 @@ work in since i last checked.
 Author: twillia2
 Date: Fri Apr 15 09:40:28 MDT 2022
 """
+import warnings
+
 from functools import lru_cache
 
 import pandas as pd
 
 from revruns import Paths
+
+warnings.filterwarnings(action="ignore", category=FutureWarning)
 
 
 TECHNOLOGIES = {
@@ -65,7 +69,6 @@ SCENARIO_CONVERSIONS = {  # Old ATB's have different scenario names
     "Conservative": "Conservative",
     "*": "*"
 }
-
 
 
 class ATB:
@@ -180,6 +183,7 @@ class ATB:
         df = self.full_data
 
         # Standardize technology aliases
+        df.loc[df[self.tech_field].isnull()] = "nan"
         df[self.tech_field] = df[self.tech_field].apply(
             lambda x: x.replace("-", "").replace(" ", "").lower()
         )
@@ -206,6 +210,7 @@ class ATB:
 
         # Return as simplified object
         cf_mults = dict(zip(cdf["core_metric_variable"], cdf["mult"]))
+        cf_mults = dict(sorted(cf_mults.items(), key=lambda item: item[1]))
 
         return cf_mults
 

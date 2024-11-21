@@ -33,7 +33,8 @@ from pyproj import CRS
 from rasterio import features
 from rasterio.merge import merge
 from rtree import index
-from shapely import geometry, MultiPolygon
+from shapely import geometry
+from shapely.geometry import MultiPolygon
 from shapely.ops import unary_union
 from tqdm.auto import tqdm
 
