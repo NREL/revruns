@@ -676,18 +676,13 @@ class Exclusions:
     def _convert_coords(self, xs, ys):
         # Convert projected coordinates into WGS84
         print("Transforming xy...")
-        # mx, my = np.meshgrid(xs, ys)
-        crs = CRS(self.profile["crs"])
-        if "World Geodetic System 1984" in crs.datum.name:
-            tcrs = CRS("epsg:4326")
-        elif "North American Datum 1983" in crs.datum.name:
-            tcrs = CRS("epsg:4269")
-        elif "Unkown" in crs.datum.name:
-            tcrs = CRS("epsg:4269")
-        else:
-            tcrs = CRS("epsg:4326")
 
-        # transformer = Transformer.from_crs(crs, tcrs, always_xy=True)
+        # mx, my = np.meshgrid(xs, ys)
+        crs = f"epsg:{CRS(self.profile['crs']).to_epsg()}"
+        tcrs = f"epsg:{CRS('epsg:4326').to_epsg()}"
+
+        # transformer = pyproj.transformer.Transformer.from_crs(crs, tcrs,
+        #                                                       always_xy=True)
         # lons, lats = transformer.transform(mx, my)
 
         # Added because original takes lots of memory for higher resolution
@@ -700,9 +695,7 @@ class Exclusions:
             geometry.Point(max_x, min_y),
             geometry.Point(max_x, max_y)
         ]
-        gdf = gpd.GeoDataFrame({
-            "geometry": corners
-        }, geometry=corners, crs=crs)
+        gdf = gpd.GeoDataFrame(geometry=corners, crs=crs)
         gdf = gdf.to_crs(tcrs)
 
         x_corners, y_corners = zip(*[(point.x, point.y)
@@ -720,13 +713,13 @@ class Exclusions:
         # Get x and y coordinates (One day we'll have one transform order!)
         geom = self.profile["transform"]  # Ensure its in the right order
         xres = geom[0]
-        ulx = geom[2]
+        minx = geom[2]
         yres = geom[4]
-        uly = geom[5]
+        maxy = geom[5]
 
         # Not doing rotations here
-        xs = [ulx + col * xres for col in range(self.profile["width"])]
-        ys = [uly + row * yres for row in range(self.profile["height"])][::-1]
+        xs = [minx + (col * xres) for col in range(self.profile["width"])]
+        ys = [maxy + (row * yres) for row in range(self.profile["height"])]
 
         # Let's not use float 64
         xs = np.array(xs).astype("float32")

@@ -1106,8 +1106,9 @@ def warp(src, dst, dtype=None, template=None, overwrite=False,
     # If a template is provided, use its geometry for target figures
     if template:
         temp = gdal.Open(template)
-        spatial_ref.ImportFromWkt(temp.GetProjection())
-        srs = spatial_ref.ExportToProj4()
+        # spatial_ref.ImportFromWkt(temp.GetProjection())
+        # srs = spatial_ref.ExportToProj4()
+        srs = temp.GetProjection()
         width = temp.RasterXSize  # consider using these warp options
         height = temp.RasterYSize
         transform = temp.GetGeoTransform()

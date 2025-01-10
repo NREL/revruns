@@ -190,7 +190,8 @@ def h5_timeseries(ds, dataset, agg_fun, layer):
     return data
 
 
-def rrasterize(gdf, resolution, dst, fillna=False, cutline=None, variable=None):
+def rrasterize(gdf, resolution, dst, fillna=False, cutline=None,
+               variable=None):
     # Make sure we have the target directory
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
 
@@ -352,15 +353,15 @@ def main(src, dst, variable, resolution, crs, agg_fun, layer, fltr, fillna,
         gpkg(src, dst, variable, resolution, crs, fillna, cutline)
 
 
-if __name__ == "__main__":
-    resolution = 2_500
-    crs = "esri:102008"
-    variable = "cf_mean"
-    cutline = None
-    src = "/Users/twillia2/transfer/geotherm_gen_sample.csv"
-    dst = "/Users/twillia2/transfer/geotherm_gen_sample.tif"
-    dst = os.path.expanduser(dst)
-    fillna = True
-    if os.path.exists(dst):
-        os.remove(dst)
-    csv(src, dst, variable, resolution, crs, fillna, cutline)
+# if __name__ == "__main__":
+#     resolution = 2_500
+#     crs = "esri:102008"
+#     variable = "cf_mean"
+#     cutline = None
+#     src = "/Users/twillia2/transfer/geotherm_gen_sample.csv"
+#     dst = "/Users/twillia2/transfer/geotherm_gen_sample.tif"
+#     dst = os.path.expanduser(dst)
+#     fillna = True
+#     if os.path.exists(dst):
+#         os.remove(dst)
+#     csv(src, dst, variable, resolution, crs, fillna, cutline)
