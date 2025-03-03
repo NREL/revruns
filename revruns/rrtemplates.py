@@ -5,7 +5,6 @@ import json
 import click
 import numpy as np
 
-
 from revruns.constants import (
     TEMPLATES,
     SAM_TEMPLATES,

@@ -401,7 +401,7 @@ class Rasterizer:
             for inputs in tqdm(input_list):
                 tmps.append(self._rasterize_partial(inputs))
         tmps = [str(tmp) for tmp in tmps if tmp]
-        print(f"Finished partial rasterization.")
+        print("Finished partial rasterization.")
 
         # Merge individual temporary rasters (python method hangs with SLURM)
         print("Merging rasterized arrays...")
@@ -513,7 +513,7 @@ class Rasterizer:
             keepers = [r for r in ridx.intersection(bounds)]
             cell_geoms = geoms[keepers]
             cell = geometry.box(*bounds)
-            overlap = cell.intersection(cell_geoms)
+            overlap = [cell.intersection(cgeom) for cgeom in cell_geoms]
             overlap = [g for g in overlap if not g.is_empty]
 
             # Construct shapely geometry of cell and intersect geometry

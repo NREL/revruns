@@ -10,7 +10,6 @@ Created on Wed Dec  4 07:58:42 2019
 @author: twillia2
 """
 import json
-import multiprocessing as mp
 import os
 import warnings
 
@@ -60,7 +59,7 @@ def crs_match_alt(crs1, crs2):
     assert "+lat_1" in crs2, "Fail"
 
     # Check that there is no difference
-    diff = set(crs1.split())  - set(crs2.split())
+    diff = set(crs1.split()) - set(crs2.split())
 
     if not diff:
         return True
@@ -307,8 +306,8 @@ class PandasExtension:
     def __init__(self, pandas_obj):
         """Initialize PandasExtension object."""
         warnings.simplefilter(action='ignore', category=UserWarning)
-        if type(pandas_obj) != pd.core.frame.DataFrame:
-            if type(pandas_obj) != gpd.geodataframe.GeoDataFrame:
+        if not isinstance(pandas_obj, pd.core.frame.DataFrame):
+            if not isinstance(pandas_obj, gpd.geodataframe.GeoDataFrame):
                 raise TypeError("Can only use .rr accessor with a pandas or "
                                 "geopandas data frame.")
         self._obj = pandas_obj

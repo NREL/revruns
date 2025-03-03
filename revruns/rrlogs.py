@@ -967,11 +967,11 @@ def main(folder, module, status, error, out, walk, full_print, csv, stats,
 
 
 if __name__ == "__main__":
-    folder = '/projects/rev/projects/naerm/fy25/rev_naerm/data/rasters/outputs/new_sample'
+    folder = '/projects/rev/projects/naerm/fy25/rev_naerm/rev/nsrdb/generation/pv_residential/conservative/'
     sub_folder = folder
     error = None
     out = None
-    walk = False
+    walk = True
     module = None
     status = None
     full_print = False
@@ -981,9 +981,9 @@ if __name__ == "__main__":
     field = None
     count_aus = False
     verbose = True
-    logs = RRLogs(folder, module, status, error, out, walk, full_print, csv,
+    self = RRLogs(folder, module, status, error, out, walk, full_print, csv,
                   stats, count_aus=count_aus, verbose=verbose)
 
-    _, status = logs.find_status(sub_folder)
+    _, status = self.find_status(sub_folder)
 
-    logs.main()
+    self.main()
