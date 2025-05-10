@@ -1,7 +1,6 @@
 README.md
 setup.py
 revruns/__init__.py
-revruns/configure.py
 revruns/constants.py
 revruns/cython_compute.c
 revruns/gdalmethods.py
@@ -9,7 +8,6 @@ revruns/paths.py
 revruns/rr.py
 revruns/rraster.py
 revruns/rratb.py
-revruns/rrcheck.py
 revruns/rrcomposite.py
 revruns/rrconnections.py
 revruns/rrdatasets.py

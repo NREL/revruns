@@ -956,7 +956,7 @@ class Financing:
         self.tr = tr
 
     def fcr(self, lifetime=30):
-        """Calculate FCR with standard ATB assumptions but variable lifetime."""
+        """Calculate FCR with standard ATB assumptions."""
         # Cacluate weight avg cost of capital and present value of depreciation
         wacc = self.wacc()
         pvd = self.pvd()

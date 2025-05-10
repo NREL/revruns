@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: revruns
 Version: 0.0.2
 Summary: Functions and CLIs that to help to configure, run, and check outputs for NREL's Renewable Energy Technical Potential Model (reV).
@@ -16,8 +16,14 @@ Requires-Dist: pandarallel>=1.6.5
 Requires-Dist: pathos>=0.3.0
 Requires-Dist: pgpasslib>=1.1.0
 Requires-Dist: pyarrow>=17.0.0
+Requires-Dist: pyogrio>=0.10.0
 Requires-Dist: remotezip>=0.12.1
 Requires-Dist: requests>=2.31.0
+Requires-Dist: rtree>=1.3.0
 Requires-Dist: tqdm>=4.65.0
 Requires-Dist: xlrd>=2.0.1
-Requires-Dist: gdal==3.9.3.*
+Requires-Dist: gdal==3.10.2.*
+Dynamic: author
+Dynamic: author-email
+Dynamic: requires-dist
+Dynamic: summary
