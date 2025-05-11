@@ -5,6 +5,7 @@ matplotlib>=3.7.1
 multimethod>=1.9.1
 multipledispatch>=0.6.0
 NREL-reV>=0.14.0
+NREL-reVX
 numba>=0.59.0
 pandarallel>=1.6.5
 pathos>=0.3.0
