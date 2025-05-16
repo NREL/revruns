@@ -234,10 +234,7 @@ class RRDebug:
     def _setup(self):
         """Setup debug directory, configs, and commands."""
         # Build command
-        if reV.__version__ < "0.8.0":
-            self.cmd = f"reV -c config_{self.module}.json {self.module}"
-        else:
-            self.cmd = f"reV {self.module} -c config_{self.module}.json"
+        self.cmd = f"reV {self.module} -c config_{self.module}.json"
 
         # Build paths and make debug directory
         run_dir = self.config_path.parent.absolute().expanduser()
