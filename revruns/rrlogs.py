@@ -360,6 +360,8 @@ class RRLogs:
         """Check/return the config_pipeline.json file in the given directory."""
         path = os.path.join(folder, file)
         if not os.path.exists(path):
+            path = os.path.join(folder, file.replace(".json", ".json5"))
+        if not os.path.exists(path):
             msg = (f"No {file} files found. If you were looking for nested "
                    "files, try running the with --walk option.")
             raise ValueError(Fore.RED + msg + Style.RESET_ALL)

@@ -28,6 +28,13 @@ FILE_HELP = "The filename of the configuration file to search for. (str)"
 PRINT_HELP = "Print the path to all pipeline configs found instead. (boolean)"
 
 
+def check_version_greater_than(version1, version2):
+    """Check if a module's version string is greater or equal to anothers."""
+    v1 = sum([int(p) for p in version1.split(".")])
+    v2 = sum([int(p) for p in version2.split(".")])
+    return v1 >= v2
+
+
 def check_status(pdir):
     """Check if a status file exists and is fully successful."""
     successful = False
@@ -72,7 +79,9 @@ def rrpipeline(dirpath, walk, file, print_paths):
     print(Fore.CYAN + f"Running rrpipeline for {dirpath}..." + Style.RESET_ALL)
     if walk:
         config_paths = rrlogs.find_files(dirpath, file)
-        config_paths = [  # Remove top level pipeline for batch runs
+
+        # Remove top level pipeline for batch runs
+        config_paths = [
             path for path in config_paths if str(Path(path).parent) != dirpath
         ]
     else:
@@ -95,10 +104,11 @@ def rrpipeline(dirpath, walk, file, print_paths):
             if not successful:
                 print(Fore.CYAN + "Submitting " + rpath + "..."
                       + Style.RESET_ALL)
-                if REV_VERSION < "0.8.0":
-                    cmd = f"reV -c {path} pipeline --monitor --background"
-                else:
+                
+                if check_version_greater_than(REV_VERSION, "0.8.0"):
                     cmd = f"reV pipeline -c {path} --monitor --background"
+                else:
+                    cmd = f"reV -c {path} pipeline --monitor --background"
                 cmd = shlex.split(cmd)
                 output = os.path.join(os.path.dirname(path), "pipeline.out")
                 with sp.Popen(
